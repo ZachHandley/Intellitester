@@ -1,0 +1,28 @@
+---
+// Test runner page injected by the integration
+const testResults = await Astro.locals.autotesterResults || [];
+---
+<html>
+<head>
+  <title>AutoTester Results</title>
+  <style>
+    body { font-family: system-ui; padding: 2rem; }
+    .pass { color: green; }
+    .fail { color: red; }
+  </style>
+</head>
+<body>
+  <h1>AutoTester Results</h1>
+  <div id="results">
+    {testResults.length === 0 ? (
+      <p>No tests run yet. Run <code>autotester run</code> to execute tests.</p>
+    ) : (
+      testResults.map(r => (
+        <div class={r.status}>
+          {r.status === 'passed' ? '✓' : '✗'} {r.name}
+        </div>
+      ))
+    )}
+  </div>
+</body>
+</html>

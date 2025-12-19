@@ -1,0 +1,51 @@
+{
+  "name": "autotester",
+  "version": "1.0.0",
+  "description": "Uses AI + iOS or Android emulators / web browsers to create automated test suites using simple instructions",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "autotester": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "typecheck": "tsc --project tsconfig.test.json",
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
+    "lint:fix": "eslint \"src/**/*.{ts,tsx}\" --fix",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
+    "format:fix": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://forge.blackleafdigital.com/BlackLeafDigital/AutoTester.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@llamaindex/anthropic": "^0.3.26",
+    "@llamaindex/ollama": "^0.1.23",
+    "@llamaindex/openai": "^0.4.22",
+    "llamaindex": "^0.12.1",
+    "playwright": "^1.57.0",
+    "yaml": "^2.8.2",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^25.0.2",
+    "@typescript-eslint/eslint-plugin": "^8.49.0",
+    "@typescript-eslint/parser": "^8.49.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.7.4",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.15"
+  },
+  "packageManager": "pnpm@10.24.0+sha512.01ff8ae71b4419903b65c60fb2dc9d34cf8bb6e06d03bde112ef38f7a34d6904c424ba66bea5cdcf12890230bf39f9580473140ed9c946fef328b6e5238a345a"
+}

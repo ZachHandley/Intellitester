@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+.pnpm-store
+artifacts
+playwright-report
+.DS_Store
+npm-debug.log*
+pnpm-debug.log*
+yarn-error.log*

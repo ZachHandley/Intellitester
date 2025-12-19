@@ -1,0 +1,28 @@
+{
+  "name": "@autotester/astro",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "keywords": ["astro-integration"],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "peerDependencies": {
+    "astro": "^4.0.0 || ^5.0.0"
+  },
+  "dependencies": {
+    "vite-plugin-autotester": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "astro": "^5.0.0"
+  }
+}

@@ -1,16 +1,6 @@
 version: '3.8'
 
 services:
-  browserless:
-    image: ghcr.io/browserless/chromium:latest
-    ports:
-      - "3000:3000"
-    environment:
-      CONCURRENT: 5
-      TIMEOUT: 30000
-      HEALTH: "true"
-    shm_size: '1gb'
-
   inbucket:
     image: inbucket/inbucket:latest
     ports:

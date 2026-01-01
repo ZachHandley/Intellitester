@@ -128,9 +128,6 @@ const webConfigSchema = z.object({
   browser: z.string().trim().optional(),
   headless: z.boolean().optional(),
   timeout: z.number().int().positive().optional(),
-  // Remote browser support
-  wsEndpoint: z.string().url().optional(),
-  cdpEndpoint: z.string().url().optional(),
 });
 
 const androidConfigSchema = z.object({
@@ -160,6 +157,25 @@ const healingSchema = z.object({
   enabled: z.boolean().optional(),
   strategies: z.array(z.string().trim()).optional(),
 });
+
+const webServerSchema = z
+  .object({
+    // Option 1: Explicit command
+    command: nonEmptyString.optional(),
+    // Option 2: Auto-detect
+    auto: z.boolean().optional(),
+    // Option 3: Static directory
+    static: z.string().optional(),
+    // Required
+    url: nonEmptyString.url(),
+    port: z.number().int().positive().optional(),
+    reuseExistingServer: z.boolean().default(true),
+    timeout: z.number().int().positive().default(30000),
+    cwd: z.string().optional(),
+  })
+  .refine((config) => config.command || config.auto || config.static, {
+    message: 'WebServerConfig requires command, auto: true, or static directory',
+  });
 
 const aiConfigSchema = z.object({
   provider: z.enum(['anthropic', 'openai', 'ollama']),
@@ -200,5 +216,6 @@ export const AutotesterConfigSchema = z.object({
   healing: healingSchema.optional(),
   email: emailConfigSchema.optional(),
   appwrite: appwriteConfigSchema.optional(),
+  webServer: webServerSchema.optional(),
   secrets: z.record(z.string(), z.string().trim()).optional(),
 });

@@ -127,6 +127,7 @@ const runCommand = async (
   const baseUrl = resolveBaseUrl(test, config?.platforms?.web?.baseUrl);
   const headed = Boolean(flags.headed);
   const browser = (flags.browser as BrowserName) ?? 'chromium';
+  const skipWebServer = Boolean(flags.noServer);
 
   console.log(
     `Running ${path.basename(absoluteTarget)} on web (${browser}${headed ? ', headed' : ''})`,
@@ -136,6 +137,7 @@ const runCommand = async (
     headed,
     browser,
     defaultTimeoutMs: config?.defaults?.timeout,
+    webServer: !skipWebServer && config?.webServer ? config.webServer : undefined,
   });
 
   for (const step of result.steps) {
@@ -200,7 +202,7 @@ const printHelp = (): void => {
 Commands:
   init                  Create default config and example test
   validate <path>       Validate a test file or directory of YAML tests
-  run <file> [--headed] [--browser=chromium|firefox|webkit]
+  run <file> [--headed] [--browser=chromium|firefox|webkit] [--no-server]
                         Run a test file
   generate "<prompt>" [--output=<file>] [--platform=web|android|ios] [--baseUrl=<url>]
                         Generate a test from natural language
@@ -212,6 +214,8 @@ const parseFlags = (args: string[]): Record<string, string | boolean> => {
   for (const arg of args) {
     if (arg === '--headed') {
       flags.headed = true;
+    } else if (arg === '--no-server') {
+      flags.noServer = true;
     } else if (arg.startsWith('--browser=')) {
       flags.browser = arg.split('=')[1];
     } else if (arg.startsWith('--output=')) {

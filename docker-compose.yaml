@@ -1,27 +1,6 @@
 version: '3.8'
 
 services:
-  browserless:
-    image: ghcr.io/browserless/chromium:latest
-    restart: unless-stopped
-    ports:
-      - "3000:3000"
-    environment:
-      # Connection settings
-      CONCURRENT: 10
-      QUEUED: 10
-      TIMEOUT: 60000
-      # Health and debug
-      HEALTH: "true"
-      DEBUG: "browserless*"
-      # Token for auth (optional)
-      TOKEN: "${BROWSERLESS_TOKEN:-}"
-    shm_size: '2gb'  # Prevent crashes
-    deploy:
-      resources:
-        limits:
-          memory: 4G
-
   inbucket:
     image: inbucket/inbucket:latest
     restart: unless-stopped
@@ -34,8 +13,6 @@ services:
   # autotester:
   #   build: .
   #   depends_on:
-  #     - browserless
   #     - inbucket
   #   environment:
-  #     BROWSERLESS_URL: ws://browserless:3000
   #     INBUCKET_URL: http://inbucket:9000

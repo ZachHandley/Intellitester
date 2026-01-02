@@ -1,5 +1,5 @@
 import { Client, Users, TablesDB, Storage, Teams } from 'node-appwrite';
-import type { TrackedResource, TestContext, AppwriteCleanupConfig } from './types';
+import type { TestContext, AppwriteCleanupConfig } from './types';
 import { saveFailedCleanup } from '../../core/cleanup/persistence.js';
 
 export class AppwriteTestClient {

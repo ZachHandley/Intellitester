@@ -123,7 +123,7 @@ export function createPostgresProvider(config: PostgresConfig): CleanupProvider 
         for (const deletedRow of result.rows) {
           deleted.push(`${tableName}:${deletedRow.id}`);
         }
-      } catch (error) {
+      } catch {
         failed.push(`${tableName}:error`);
       }
     }
@@ -141,12 +141,12 @@ export function createPostgresProvider(config: PostgresConfig): CleanupProvider 
     async configure() {
       try {
         // Dynamic import since pg is an optional dependency
-        // @ts-ignore - pg is an optional peer dependency
+        // @ts-expect-error - pg is an optional peer dependency
         const pg = await import('pg');
         const Client = pg.Client || pg.default?.Client;
         client = new Client({ connectionString: config.connectionString });
         await client.connect();
-      } catch (error) {
+      } catch {
         throw new Error(
           'Failed to initialize Postgres client. Make sure the "pg" package is installed: npm install pg'
         );

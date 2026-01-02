@@ -7,7 +7,6 @@ import {
   chromium,
   firefox,
   webkit,
-  type Browser,
   type BrowserType,
   type Locator as PWLocator,
   type Page,
@@ -950,7 +949,7 @@ export const runWebTest = async (
           return;
         }
       }
-    } catch (e) {
+    } catch {
       // Ignore parse errors for non-JSON responses
     }
   });

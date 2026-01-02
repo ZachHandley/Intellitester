@@ -232,28 +232,6 @@ jobs:
   # ===========================================
   integration-test:
     runs-on: ubuntu-latest
-    services:
-      browserless:
-        image: ghcr.io/browserless/chromium:latest
-        ports:
-          - 3000:3000
-        options: >-
-          --shm-size=2gb
-          --health-cmd "curl -f http://localhost:3000/health || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-      inbucket:
-        image: inbucket/inbucket:latest
-        ports:
-          - 9000:9000
-          - 2500:2500
-          - 1100:1100
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/health || exit 1"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -285,24 +263,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Wait for Browserless
-        run: |
-          echo "Waiting for Browserless to be ready..."
-          timeout 60 bash -c 'until curl -f http://localhost:3000/health > /dev/null 2>&1; do sleep 2; done'
-          echo "Browserless is ready!"
-
-      - name: Wait for Inbucket
-        run: |
-          echo "Waiting for Inbucket to be ready..."
-          timeout 60 bash -c 'until curl -f http://localhost:9000/health > /dev/null 2>&1; do sleep 2; done'
-          echo "Inbucket is ready!"
-
       - name: Run integration tests
-        env:
-          BROWSERLESS_URL: ws://localhost:3000
-          INBUCKET_URL: http://localhost:9000
-          INBUCKET_SMTP_HOST: localhost
-          INBUCKET_SMTP_PORT: 2500
         run: pnpm test:integration
 
       - name: Save cache

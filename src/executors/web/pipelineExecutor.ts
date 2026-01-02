@@ -6,8 +6,6 @@ import {
   chromium,
   firefox,
   webkit,
-  type Browser,
-  type BrowserContext,
   type BrowserType,
   type Page,
 } from 'playwright';

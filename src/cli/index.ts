@@ -17,7 +17,7 @@ import type { TestDefinition } from '../core/types';
 import { runWebTest, type BrowserName } from '../executors/web';
 import { runWorkflow } from '../executors/web/workflowExecutor';
 import { generateTest } from '../generator';
-import type { AIConfig } from '../ai/types';
+import type { AIConfig as _AIConfig } from '../ai/types';
 import { loadFailedCleanups, removeFailedCleanup } from '../core/cleanup/persistence.js';
 import { loadCleanupHandlers, executeCleanup } from '../core/cleanup/index.js';
 import type { CleanupConfig } from '../core/cleanup/types.js';
@@ -665,7 +665,7 @@ const runPipelineCommand = async (file: string, options: RunOptions): Promise<vo
   const pipeline = await loadPipelineDefinition(pipelinePath);
 
   // Load config to get AI settings (for interactive mode)
-  const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
+  const _config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
 
   const result = await runPipeline(pipeline, pipelinePath, {
     headed: options.visible,

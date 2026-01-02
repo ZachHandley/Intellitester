@@ -45,7 +45,7 @@ function formatActionName(step: StepResult, index: number): string {
     case 'debug':
       return `step-${index + 1}: debug breakpoint`;
     default: {
-      const exhaustiveCheck: never = action;
+      const _exhaustiveCheck: never = action;
       return `step-${index + 1}: unknown action`;
     }
   }

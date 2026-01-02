@@ -1,13 +1,11 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { type ChildProcess } from 'node:child_process';
 
 import {
   chromium,
   firefox,
   webkit,
-  type Browser,
-  type BrowserContext,
   type BrowserType,
   type Page,
 } from 'playwright';
@@ -17,12 +15,10 @@ import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import {
-  AppwriteTestClient,
   createTestContext,
   APPWRITE_PATTERNS,
   APPWRITE_UPDATE_PATTERNS,
   APPWRITE_DELETE_PATTERNS,
-  type TrackedResource,
 } from '../../integrations/appwrite';
 import type { TestContext } from '../../integrations/appwrite/types';
 import { startTrackingServer, type TrackingServer } from '../../tracking';
@@ -100,8 +96,8 @@ function interpolateWorkflowVariables(
   return value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
     // Handle {{testId.varName}} syntax
     if (path.includes('.')) {
-      const [testId, varName] = path.split('.', 2);
-      const testResult = testResults.find((t) => t.id === testId);
+      const [testId, _varName] = path.split('.', 2);
+      const _testResult = testResults.find((t) => t.id === testId);
 
       // Check if the test result has variables in steps
       // Variables are stored in the execution context during test run
@@ -127,7 +123,7 @@ async function runTestInWorkflow(
   page: Page,
   context: ExecutionContext,
   options: WorkflowOptions,
-  workflowDir: string
+  _workflowDir: string
 ): Promise<{ status: 'passed' | 'failed'; steps: StepResult[] }> {
   const results: StepResult[] = [];
   const debugMode = options.debug ?? false;
@@ -349,7 +345,7 @@ async function runTestInWorkflow(
       status: 'passed',
       steps: results,
     };
-  } catch (error) {
+  } catch {
     return {
       status: 'failed',
       steps: results,

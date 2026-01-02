@@ -61,13 +61,13 @@ export function createSqliteProvider(config: SqliteConfig): CleanupProvider {
     async configure() {
       try {
         // Dynamic import since better-sqlite3 is an optional dependency
-        // @ts-ignore - better-sqlite3 is an optional peer dependency
+        // @ts-expect-error - better-sqlite3 is an optional peer dependency
         const DatabaseModule = await import('better-sqlite3');
         const Database = DatabaseModule.default || DatabaseModule;
         db = new Database(config.database, {
           readonly: config.readonly || false,
         });
-      } catch (error) {
+      } catch {
         throw new Error(
           'Failed to initialize SQLite database. Make sure the "better-sqlite3" package is installed: npm install better-sqlite3'
         );

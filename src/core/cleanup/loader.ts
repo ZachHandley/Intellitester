@@ -107,7 +107,7 @@ export async function loadCleanupHandlers(
             mergeHandlers(handlers, fileHandlers);
           }
         }
-      } catch (e) {
+      } catch {
         // Directory doesn't exist or no matches - that's fine
       }
     }
@@ -161,10 +161,8 @@ async function tryLoadHandlerFile(filePath: string): Promise<Record<string, Clea
       }
     }
 
-    // Use require for CommonJS module loading
-    // Clear the require cache to ensure fresh load
-    delete require.cache[require.resolve(loadPath)];
-    const module = require(loadPath);
+    // Use dynamic import with cache busting for fresh load
+    const module = await import(`${loadPath}?t=${Date.now()}`);
 
     // Handle default export or named exports
     if (module.default && typeof module.default === 'object') {
@@ -180,7 +178,7 @@ async function tryLoadHandlerFile(filePath: string): Promise<Record<string, Clea
     }
 
     return Object.keys(handlers).length > 0 ? handlers : null;
-  } catch (e) {
+  } catch {
     // File doesn't exist or failed to load
     return null;
   }

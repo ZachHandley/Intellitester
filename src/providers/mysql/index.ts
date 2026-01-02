@@ -137,7 +137,7 @@ export function createMysqlProvider(config: MysqlConfig): CleanupProvider {
         for (const id of idsToDelete) {
           deleted.push(`${tableName}:${id}`);
         }
-      } catch (error) {
+      } catch {
         failed.push(`${tableName}:error`);
       }
     }
@@ -155,7 +155,7 @@ export function createMysqlProvider(config: MysqlConfig): CleanupProvider {
     async configure() {
       try {
         // Dynamic import since mysql2 is an optional dependency
-        // @ts-ignore - mysql2 is an optional peer dependency
+        // @ts-expect-error - mysql2 is an optional peer dependency
         const mysql = await import('mysql2/promise');
         const createConnection = mysql.createConnection || mysql.default?.createConnection;
         connection = await createConnection({
@@ -165,7 +165,7 @@ export function createMysqlProvider(config: MysqlConfig): CleanupProvider {
           password: config.password,
           database: config.database,
         });
-      } catch (error) {
+      } catch {
         throw new Error(
           'Failed to initialize MySQL connection. Make sure the "mysql2" package is installed: npm install mysql2'
         );

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseAutotesterConfig, parseTestDefinition } from '../src/core/loader';
+import { parseIntellitesterConfig, parseTestDefinition } from '../src/core/loader';
 
 describe('schemas', () => {
   it('parses a minimal web test', () => {
@@ -54,7 +54,7 @@ email:
   endpoint: http://localhost:9000
 `;
 
-    const config = parseAutotesterConfig(yaml);
+    const config = parseIntellitesterConfig(yaml);
     expect(config.defaults?.timeout).toBe(30000);
     expect(config.platforms?.web?.baseUrl).toBe('https://example.com');
     expect(config.appwrite?.projectId).toBe('example-project');

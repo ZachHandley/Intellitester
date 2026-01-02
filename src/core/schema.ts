@@ -103,6 +103,14 @@ const emailClearActionSchema = z.object({
   mailbox: nonEmptyString,
 });
 
+const appwriteVerifyEmailActionSchema = z.object({
+  type: z.literal('appwrite.verifyEmail'),
+});
+
+const debugActionSchema = z.object({
+  type: z.literal('debug'),
+});
+
 export const ActionSchema = z.discriminatedUnion('type', [
   navigateActionSchema,
   tapActionSchema,
@@ -116,6 +124,8 @@ export const ActionSchema = z.discriminatedUnion('type', [
   emailExtractCodeActionSchema,
   emailExtractLinkActionSchema,
   emailClearActionSchema,
+  appwriteVerifyEmailActionSchema,
+  debugActionSchema,
 ]);
 
 const defaultsSchema = z.object({
@@ -142,7 +152,7 @@ const iosConfigSchema = z.object({
 
 const emailConfigSchema = z.object({
   provider: z.literal('inbucket'),
-  endpoint: nonEmptyString.url(),
+  endpoint: nonEmptyString.url().optional(),
 });
 
 const appwriteConfigSchema = z.object({
@@ -177,6 +187,12 @@ const webServerSchema = z
     message: 'WebServerConfig requires command, auto: true, or static directory',
   });
 
+const aiSourceSchema = z.object({
+  pagesDir: z.string().optional(),
+  componentsDir: z.string().optional(),
+  extensions: z.array(z.string()).default(['.vue', '.astro', '.tsx', '.jsx', '.svelte']),
+}).optional();
+
 const aiConfigSchema = z.object({
   provider: z.enum(['anthropic', 'openai', 'ollama']),
   model: nonEmptyString,
@@ -184,7 +200,28 @@ const aiConfigSchema = z.object({
   baseUrl: z.string().trim().url().optional(),
   temperature: z.number().min(0).max(2).default(0.2),
   maxTokens: z.number().int().positive().default(4096),
+  source: aiSourceSchema,
 });
+
+// Cleanup discovery configuration
+export const cleanupDiscoverSchema = z.object({
+  enabled: z.boolean().default(true),
+  paths: z.array(z.string()).default(['./tests/cleanup']),
+  pattern: z.string().default('**/*.ts'),
+}).optional();
+
+// Main cleanup configuration
+export const cleanupConfigSchema = z.object({
+  provider: z.string().optional(),
+  parallel: z.boolean().default(false),
+  retries: z.number().min(1).max(10).default(3),
+  types: z.record(z.string(), z.string()).optional(),
+  handlers: z.array(z.string()).optional(),
+  discover: cleanupDiscoverSchema,
+}).passthrough(); // Allow provider-specific configs like appwrite: {...}
+
+// Export the inferred type
+export type CleanupConfig = z.infer<typeof cleanupConfigSchema>;
 
 const platformsSchema = z.object({
   web: webConfigSchema.optional(),
@@ -209,13 +246,14 @@ export const TestDefinitionSchema = z.object({
   steps: z.array(ActionSchema).min(1),
 });
 
-export const AutotesterConfigSchema = z.object({
+export const IntellitesterConfigSchema = z.object({
   defaults: defaultsSchema.optional(),
   ai: aiConfigSchema.optional(),
   platforms: platformsSchema.optional(),
   healing: healingSchema.optional(),
   email: emailConfigSchema.optional(),
   appwrite: appwriteConfigSchema.optional(),
+  cleanup: cleanupConfigSchema.optional(),
   webServer: webServerSchema.optional(),
   secrets: z.record(z.string(), z.string().trim()).optional(),
 });

@@ -1,0 +1,517 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "IntelliTester Test Definition",
+  "description": "Schema for IntelliTester test definition files (*.test.yaml)",
+  "type": "object",
+  "required": ["name", "platform", "steps"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The name of the test",
+      "examples": ["User Login Test", "Checkout Flow", "Sign Up Process"]
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["web", "android", "ios"],
+      "description": "The platform to run the test on",
+      "default": "web"
+    },
+    "variables": {
+      "type": "object",
+      "description": "Variables that can be referenced in test steps using ${VARIABLE_NAME} syntax",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "examples": [
+        {
+          "BASE_URL": "https://example.com",
+          "TEST_EMAIL": "test@example.com"
+        }
+      ]
+    },
+    "config": {
+      "type": "object",
+      "description": "Test-specific configuration that overrides global settings",
+      "properties": {
+        "defaults": {
+          "type": "object",
+          "description": "Default settings for this test",
+          "properties": {
+            "timeout": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Default timeout in milliseconds for actions",
+              "examples": [30000, 60000]
+            },
+            "screenshots": {
+              "type": "string",
+              "enum": ["on-failure", "always", "never"],
+              "description": "When to take screenshots during test execution",
+              "default": "on-failure"
+            }
+          }
+        },
+        "web": {
+          "type": "object",
+          "description": "Web platform configuration",
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "format": "uri",
+              "description": "Base URL for the web application",
+              "examples": ["https://example.com", "http://localhost:3000"]
+            },
+            "browser": {
+              "type": "string",
+              "description": "Browser to use for testing",
+              "examples": ["chromium", "firefox", "webkit"]
+            },
+            "headless": {
+              "type": "boolean",
+              "description": "Run browser in headless mode",
+              "default": true
+            },
+            "timeout": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Timeout in milliseconds for web actions",
+              "examples": [30000]
+            }
+          }
+        },
+        "android": {
+          "type": "object",
+          "description": "Android platform configuration",
+          "properties": {
+            "appId": {
+              "type": "string",
+              "description": "Android application ID",
+              "examples": ["com.example.app"]
+            },
+            "device": {
+              "type": "string",
+              "description": "Device name or ID to run tests on",
+              "examples": ["Pixel_4_API_30"]
+            }
+          }
+        },
+        "ios": {
+          "type": "object",
+          "description": "iOS platform configuration",
+          "properties": {
+            "bundleId": {
+              "type": "string",
+              "description": "iOS bundle identifier",
+              "examples": ["com.example.app"]
+            },
+            "simulator": {
+              "type": "string",
+              "description": "Simulator name to run tests on",
+              "examples": ["iPhone 14 Pro"]
+            }
+          }
+        },
+        "email": {
+          "type": "object",
+          "description": "Email testing configuration",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": ["inbucket"],
+              "description": "Email testing provider"
+            },
+            "endpoint": {
+              "type": "string",
+              "format": "uri",
+              "description": "Email service endpoint URL",
+              "examples": ["http://localhost:9000"]
+            }
+          },
+          "required": ["provider"]
+        },
+        "appwrite": {
+          "type": "object",
+          "description": "Appwrite backend configuration",
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "format": "uri",
+              "description": "Appwrite API endpoint",
+              "examples": ["https://cloud.appwrite.io/v1"]
+            },
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Appwrite project ID"
+            },
+            "apiKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Appwrite API key"
+            },
+            "cleanup": {
+              "type": "boolean",
+              "description": "Enable automatic cleanup of created resources",
+              "default": true
+            },
+            "cleanupOnFailure": {
+              "type": "boolean",
+              "description": "Clean up resources even when test fails",
+              "default": true
+            }
+          },
+          "required": ["endpoint", "projectId", "apiKey"]
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "description": "The sequence of actions to execute in this test",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Navigate to a URL",
+            "required": ["type", "value"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "navigate"
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "description": "URL or path to navigate to",
+                "examples": ["/login", "https://example.com/signup"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Click or tap on an element",
+            "required": ["type", "target"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "tap"
+              },
+              "target": {
+                "$ref": "#/definitions/locator"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Input text into a field",
+            "required": ["type", "target", "value"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "input"
+              },
+              "target": {
+                "$ref": "#/definitions/locator"
+              },
+              "value": {
+                "type": "string",
+                "description": "Text to input (can reference variables with ${VAR_NAME})",
+                "examples": ["user@example.com", "${TEST_EMAIL}", "${PASSWORD}"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Assert that an element exists or contains expected text",
+            "required": ["type", "target"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "assert"
+              },
+              "target": {
+                "$ref": "#/definitions/locator"
+              },
+              "value": {
+                "type": "string",
+                "description": "Expected text content (optional)",
+                "examples": ["Welcome", "Login successful"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Wait for an element or timeout",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "wait"
+              },
+              "target": {
+                "$ref": "#/definitions/locator",
+                "description": "Element to wait for (optional if timeout is specified)"
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Time to wait in milliseconds",
+                "examples": [1000, 5000]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Scroll the page or an element",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "scroll"
+              },
+              "target": {
+                "$ref": "#/definitions/locator",
+                "description": "Element to scroll (optional, defaults to page)"
+              },
+              "direction": {
+                "type": "string",
+                "enum": ["up", "down"],
+                "description": "Direction to scroll",
+                "default": "down"
+              },
+              "amount": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Amount to scroll in pixels",
+                "examples": [100, 500]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Take a screenshot",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "screenshot"
+              },
+              "name": {
+                "type": "string",
+                "description": "Name for the screenshot file",
+                "examples": ["after-login", "checkout-page"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Set a variable for use in later steps",
+            "required": ["type", "name"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "setVar"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Variable name to set",
+                "examples": ["USER_ID", "AUTH_TOKEN"]
+              },
+              "value": {
+                "type": "string",
+                "description": "Static value to set (optional if from/path is used)",
+                "examples": ["static-value"]
+              },
+              "from": {
+                "type": "string",
+                "enum": ["response", "element", "email"],
+                "description": "Extract value from a source"
+              },
+              "path": {
+                "type": "string",
+                "description": "JSON path or selector for extraction",
+                "examples": ["$.data.userId", "data-user-id"]
+              },
+              "pattern": {
+                "type": "string",
+                "description": "Regular expression pattern for extraction",
+                "examples": ["\\d{6}", "user-([a-z0-9]+)"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Wait for an email to arrive",
+            "required": ["type", "mailbox"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "email.waitFor"
+              },
+              "mailbox": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Email address or mailbox to check",
+                "examples": ["test@example.com"]
+              },
+              "timeout": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "How long to wait for email in milliseconds",
+                "examples": [30000]
+              },
+              "subjectContains": {
+                "type": "string",
+                "description": "Filter by email subject",
+                "examples": ["Verification", "Welcome"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Extract a verification code from email",
+            "required": ["type", "saveTo"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "email.extractCode"
+              },
+              "saveTo": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Variable name to save the extracted code",
+                "examples": ["VERIFICATION_CODE"]
+              },
+              "pattern": {
+                "type": "string",
+                "description": "Regular expression to extract code",
+                "examples": ["\\d{6}", "code:\\s*(\\w+)"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Extract a link from email",
+            "required": ["type", "saveTo"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "email.extractLink"
+              },
+              "saveTo": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Variable name to save the extracted link",
+                "examples": ["VERIFY_URL"]
+              },
+              "pattern": {
+                "type": "string",
+                "description": "Regular expression to match specific links",
+                "examples": ["verify.*"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Clear emails from a mailbox",
+            "required": ["type", "mailbox"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "email.clear"
+              },
+              "mailbox": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Email address or mailbox to clear",
+                "examples": ["test@example.com"]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Verify email using Appwrite",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "appwrite.verifyEmail"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "description": "Pause execution and open Playwright Inspector for debugging",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "debug"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "locator": {
+      "type": "object",
+      "description": "Defines how to locate an element on the page. At least one selector must be provided.",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "AI-friendly description of the element to find (e.g., 'the login button', 'email input field')"
+        },
+        "testId": {
+          "type": "string",
+          "description": "data-testid attribute value",
+          "examples": ["login-button", "email-input"]
+        },
+        "text": {
+          "type": "string",
+          "description": "Visible text content",
+          "examples": ["Sign In", "Submit"]
+        },
+        "css": {
+          "type": "string",
+          "description": "CSS selector",
+          "examples": [".btn-primary", "#submit-button"]
+        },
+        "xpath": {
+          "type": "string",
+          "description": "XPath selector",
+          "examples": ["//button[@type='submit']"]
+        },
+        "role": {
+          "type": "string",
+          "description": "ARIA role",
+          "examples": ["button", "textbox", "link"]
+        },
+        "name": {
+          "type": "string",
+          "description": "Accessible name",
+          "examples": ["Email", "Password"]
+        }
+      },
+      "additionalProperties": false,
+      "minProperties": 1
+    }
+  }
+}

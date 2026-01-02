@@ -1,10 +1,22 @@
 {
-  "name": "@autotester/astro",
+  "name": "intellitester-astro",
   "version": "1.0.0",
+  "description": "Astro integration for IntelliTester - AI-powered automated testing",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "keywords": ["astro-integration"],
+  "repository": {
+    "type": "git",
+    "url": "https://forge.blackleafdigital.com/zachhandley/Intellitester.git",
+    "directory": "packages/astro-integration"
+  },
+  "homepage": "https://github.com/ZachHandley/Intellitester",
+  "bugs": {
+    "url": "https://github.com/ZachHandley/Intellitester/issues"
+  },
+  "author": "Zach Handley <zachhandley@gmail.com> (https://zachhandley.com)",
+  "license": "MIT",
+  "keywords": ["astro-integration", "astro", "testing", "intellitester", "e2e"],
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit"
@@ -19,7 +31,7 @@
     "astro": "^4.0.0 || ^5.0.0"
   },
   "dependencies": {
-    "vite-plugin-autotester": "workspace:*"
+    "vite-plugin-intellitester": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

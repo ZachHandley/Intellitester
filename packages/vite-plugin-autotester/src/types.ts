@@ -1,7 +1,7 @@
 /**
- * Configuration options for the AutoTester Vite plugin
+ * Configuration options for the IntelliTester Vite plugin
  */
-export interface AutotesterOptions {
+export interface IntellitesterOptions {
   /**
    * Directory where test files are stored
    * @default './tests'
@@ -27,14 +27,14 @@ export interface AutotesterOptions {
   watchTests?: boolean;
 
   /**
-   * Path to autotester.config.yaml
-   * @default 'autotester.config.yaml'
+   * Path to intellitester.config.yaml
+   * @default 'intellitester.config.yaml'
    */
   configPath?: string;
 
   /**
    * Base URL for the dev server endpoint
-   * @default '/__autotester'
+   * @default '/__intellitester'
    */
   endpoint?: string;
 }

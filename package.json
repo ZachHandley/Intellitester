@@ -1,17 +1,63 @@
 {
-  "name": "autotester",
+  "name": "intellitester",
   "version": "1.0.0",
   "description": "Uses AI + iOS or Android emulators / web browsers to create automated test suites using simple instructions",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "schemas"
   ],
   "bin": {
-    "autotester": "dist/cli/index.js"
+    "intellitester": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./integration": {
+      "types": "./dist/integration/index.d.ts",
+      "import": "./dist/integration/index.js",
+      "require": "./dist/integration/index.cjs"
+    },
+    "./cleanup": {
+      "types": "./dist/core/cleanup/index.d.ts",
+      "import": "./dist/core/cleanup/index.js",
+      "require": "./dist/core/cleanup/index.cjs"
+    },
+    "./providers": {
+      "types": "./dist/providers/index.d.ts",
+      "import": "./dist/providers/index.js",
+      "require": "./dist/providers/index.cjs"
+    },
+    "./providers/appwrite": {
+      "types": "./dist/providers/appwrite/index.d.ts",
+      "import": "./dist/providers/appwrite/index.js",
+      "require": "./dist/providers/appwrite/index.cjs"
+    },
+    "./providers/postgres": {
+      "types": "./dist/providers/postgres/index.d.ts",
+      "import": "./dist/providers/postgres/index.js",
+      "require": "./dist/providers/postgres/index.cjs"
+    },
+    "./providers/mysql": {
+      "types": "./dist/providers/mysql/index.d.ts",
+      "import": "./dist/providers/mysql/index.js",
+      "require": "./dist/providers/mysql/index.cjs"
+    },
+    "./providers/sqlite": {
+      "types": "./dist/providers/sqlite/index.d.ts",
+      "import": "./dist/providers/sqlite/index.js",
+      "require": "./dist/providers/sqlite/index.cjs"
+    }
   },
   "scripts": {
-    "build": "tsc --project tsconfig.json",
+    "build": "tsup",
+    "build:tsc": "tsc --project tsconfig.json",
     "typecheck": "tsc --project tsconfig.test.json",
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "lint:fix": "eslint \"src/**/*.{ts,tsx}\" --fix",
@@ -23,29 +69,45 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://forge.blackleafdigital.com/BlackLeafDigital/AutoTester.git"
+    "url": "https://forge.blackleafdigital.com/zachhandley/Intellitester.git"
   },
-  "keywords": [],
-  "author": "",
+  "homepage": "https://github.com/ZachHandley/Intellitester",
+  "bugs": {
+    "url": "https://github.com/ZachHandley/Intellitester/issues"
+  },
+  "keywords": [
+    "testing",
+    "ai",
+    "automation",
+    "e2e",
+    "playwright",
+    "intellitester"
+  ],
+  "author": "Zach Handley <zachhandley@gmail.com> (https://zachhandley.com)",
   "license": "MIT",
-  "type": "commonjs",
   "dependencies": {
     "@llamaindex/anthropic": "^0.3.26",
     "@llamaindex/ollama": "^0.1.23",
     "@llamaindex/openai": "^0.4.22",
+    "commander": "^14.0.2",
+    "dotenv": "^17.2.3",
+    "glob": "^13.0.0",
     "llamaindex": "^0.12.1",
     "node-appwrite": "^21.0.0",
     "playwright": "^1.57.0",
+    "prompts": "^2.4.2",
     "yaml": "^2.8.2",
     "zod": "^4.1.13"
   },
   "devDependencies": {
     "@types/node": "^25.0.2",
+    "@types/prompts": "^2.4.9",
     "@typescript-eslint/eslint-plugin": "^8.49.0",
     "@typescript-eslint/parser": "^8.49.0",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.7.4",
+    "tsup": "^8.5.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   },

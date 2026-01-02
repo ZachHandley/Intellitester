@@ -12,11 +12,14 @@ import {
   type Locator as PWLocator,
   type Page,
 } from 'playwright';
+import prompts from 'prompts';
 
 import type { Action, Locator, TestDefinition } from '../../core/types';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import { AppwriteTestClient, createTestContext, APPWRITE_PATTERNS, APPWRITE_UPDATE_PATTERNS, APPWRITE_DELETE_PATTERNS, type TrackedResource } from '../../integrations/appwrite';
+import { getAISuggestion } from '../../ai/errorHelper';
+import { TrackingServer } from '../../tracking/trackingServer';
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
 
@@ -44,6 +47,9 @@ export interface WebRunOptions {
   screenshotDir?: string;
   defaultTimeoutMs?: number;
   webServer?: WebServerConfig;
+  debug?: boolean;
+  interactive?: boolean;
+  aiConfig?: import('../../ai/types').AIConfig;
 }
 
 export interface StepResult {
@@ -64,6 +70,11 @@ interface ExecutionContext {
   lastEmail: Email | null;
   emailClient: InbucketClient | null;
   appwriteContext: import('../../integrations/appwrite/types').TestContext;
+  appwriteConfig?: {
+    endpoint: string;
+    projectId: string;
+    apiKey: string;
+  };
 }
 
 const defaultScreenshotDir = path.join(process.cwd(), 'artifacts', 'screenshots');
@@ -183,6 +194,12 @@ const runScreenshot = async (
   stepIndex: number,
 ): Promise<string> => {
   await ensureScreenshotDir(screenshotDir);
+
+  // Wait for network to be idle (or max 5 seconds)
+  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
+    // Timeout is fine - proceed with screenshot anyway
+  });
+
   const filename = name ?? `step-${stepIndex + 1}.png`;
   const filePath = path.join(screenshotDir, filename);
   await page.screenshot({ path: filePath, fullPage: true });
@@ -271,7 +288,8 @@ function detectFramework(pkg: Record<string, unknown> | null): FrameworkInfo | n
     return { name: 'nuxt', buildCommand: 'node .output/server/index.mjs', devCommand: 'nuxi dev' };
   }
   if (deps['astro']) {
-    return { name: 'astro', buildCommand: 'npx -y astro preview', devCommand: 'astro dev' };
+    // Use astro dev for both - astro preview doesn't work with some adapters (e.g., Cloudflare)
+    return { name: 'astro', buildCommand: 'npx -y astro dev', devCommand: 'astro dev' };
   }
   if (deps['@sveltejs/kit']) {
     return { name: 'sveltekit', buildCommand: 'npx -y vite preview', devCommand: 'vite dev' };
@@ -346,7 +364,7 @@ async function detectServerCommand(cwd: string): Promise<string> {
   throw new Error('Could not auto-detect server command. Please specify command explicitly.');
 }
 
-async function startWebServer(config: WebServerConfig): Promise<ChildProcess | null> {
+export async function startWebServer(config: WebServerConfig): Promise<ChildProcess | null> {
   const { url, reuseExistingServer = true, timeout = 30000, cwd = process.cwd() } = config;
 
   // Check if already running
@@ -394,11 +412,279 @@ async function startWebServer(config: WebServerConfig): Promise<ChildProcess | n
   return serverProcess;
 }
 
-function killServer(serverProcess: ChildProcess | null): void {
+export function killServer(serverProcess: ChildProcess | null): void {
   if (serverProcess && !serverProcess.killed) {
     console.log('Stopping server...');
     serverProcess.kill('SIGTERM');
   }
+}
+
+async function handleInteractiveError(
+  page: Page,
+  action: Action,
+  error: Error,
+  screenshotDir: string,
+  stepIndex: number,
+  aiConfig?: import('../../ai/types').AIConfig,
+): Promise<'retry' | 'skip' | 'abort' | 'debug'> {
+  console.error(`\n❌ Action failed: ${action.type}`);
+  console.error(`   Error: ${error.message}\n`);
+
+  // Take screenshot
+  await ensureScreenshotDir(screenshotDir);
+  const screenshotPath = path.join(screenshotDir, `error-step-${stepIndex + 1}.png`);
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+
+  // Get page content
+  const pageContent = await page.content();
+
+  // Get AI suggestion
+  if (aiConfig) {
+    console.log('🤖 Analyzing error with AI...\n');
+    const screenshot = await fs.readFile(screenshotPath);
+    const suggestion = await getAISuggestion(error.message, action, pageContent, screenshot, aiConfig);
+
+    if (suggestion.hasSuggestion && suggestion.suggestedSelector) {
+      console.log('🤖 AI Suggestion:');
+      console.log(`   ${suggestion.explanation}\n`);
+      console.log('   Suggested selector:');
+      console.log('   target:');
+      if (suggestion.suggestedSelector.testId) {
+        console.log(`     testId: "${suggestion.suggestedSelector.testId}"`);
+      }
+      if (suggestion.suggestedSelector.text) {
+        console.log(`     text: "${suggestion.suggestedSelector.text}"`);
+      }
+      if (suggestion.suggestedSelector.css) {
+        console.log(`     css: "${suggestion.suggestedSelector.css}"`);
+      }
+      if (suggestion.suggestedSelector.role) {
+        console.log(`     role: "${suggestion.suggestedSelector.role}"`);
+      }
+      if (suggestion.suggestedSelector.name) {
+        console.log(`     name: "${suggestion.suggestedSelector.name}"`);
+      }
+      console.log('');
+    } else {
+      console.log(`🤖 AI Analysis: ${suggestion.explanation}\n`);
+    }
+  }
+
+  // Prompt user
+  const response = await prompts({
+    type: 'select',
+    name: 'action',
+    message: 'What would you like to do?',
+    choices: [
+      { title: 'Retry with AI suggestion', value: 'retry', disabled: !aiConfig },
+      { title: 'Skip this step', value: 'skip' },
+      { title: 'Abort test', value: 'abort' },
+      { title: 'Open in browser (pause)', value: 'debug' },
+    ],
+    initial: 0,
+  });
+
+  return response.action || 'abort';
+}
+
+async function executeActionWithRetry(
+  page: Page,
+  action: Action,
+  index: number,
+  options: {
+    baseUrl?: string;
+    context: ExecutionContext;
+    screenshotDir: string;
+    debugMode: boolean;
+    interactive: boolean;
+    aiConfig?: import('../../ai/types').AIConfig;
+  },
+): Promise<void> {
+  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig } = options;
+
+  while (true) {
+    try {
+      switch (action.type) {
+        case 'navigate': {
+          const interpolated = interpolateVariables(action.value, context.variables);
+          const target = resolveUrl(interpolated, baseUrl);
+          if (debugMode) {
+            console.log(`[DEBUG] Navigating to: ${target}`);
+          }
+          await runNavigate(page, action.value, baseUrl, context);
+          break;
+        }
+        case 'tap': {
+          if (debugMode) {
+            console.log(`[DEBUG] Tapping element:`, action.target);
+          }
+          await runTap(page, action.target);
+          break;
+        }
+        case 'input': {
+          if (debugMode) {
+            const interpolated = interpolateVariables(action.value, context.variables);
+            console.log(`[DEBUG] Inputting value into element:`, action.target);
+            console.log(`[DEBUG] Value: ${interpolated}`);
+          }
+          await runInput(page, action.target, action.value, context);
+          break;
+        }
+        case 'assert': {
+          if (debugMode) {
+            console.log(`[DEBUG] Asserting element:`, action.target);
+            if (action.value) {
+              const interpolated = interpolateVariables(action.value, context.variables);
+              console.log(`[DEBUG] Expected text contains: ${interpolated}`);
+            }
+          }
+          await runAssert(page, action.target, action.value, context);
+          break;
+        }
+        case 'wait':
+          await runWait(page, action);
+          break;
+        case 'scroll':
+          await runScroll(page, action);
+          break;
+        case 'screenshot':
+          throw new Error('Screenshot action should be handled separately');
+        case 'setVar': {
+          let value: string;
+          if (action.value) {
+            value = interpolateVariables(action.value, context.variables);
+          } else if (action.from === 'response') {
+            throw new Error('setVar from response not yet implemented');
+          } else if (action.from === 'element') {
+            throw new Error('setVar from element not yet implemented');
+          } else if (action.from === 'email') {
+            throw new Error('Use email.extractCode or email.extractLink instead');
+          } else {
+            throw new Error('setVar requires value or from');
+          }
+          context.variables.set(action.name, value);
+          break;
+        }
+        case 'email.waitFor': {
+          if (!context.emailClient) {
+            throw new Error('Email client not configured');
+          }
+          const mailbox = interpolateVariables(action.mailbox, context.variables);
+          context.lastEmail = await context.emailClient.waitForEmail(mailbox, {
+            timeout: action.timeout,
+            subjectContains: action.subjectContains,
+          });
+          break;
+        }
+        case 'email.extractCode': {
+          if (!context.emailClient) {
+            throw new Error('Email client not configured');
+          }
+          if (!context.lastEmail) {
+            throw new Error('No email loaded - call email.waitFor first');
+          }
+          const code = context.emailClient.extractCode(
+            context.lastEmail,
+            action.pattern ? new RegExp(action.pattern) : undefined,
+          );
+          if (!code) {
+            throw new Error('No code found in email');
+          }
+          context.variables.set(action.saveTo, code);
+          break;
+        }
+        case 'email.extractLink': {
+          if (!context.emailClient) {
+            throw new Error('Email client not configured');
+          }
+          if (!context.lastEmail) {
+            throw new Error('No email loaded - call email.waitFor first');
+          }
+          const link = context.emailClient.extractLink(
+            context.lastEmail,
+            action.pattern ? new RegExp(action.pattern) : undefined,
+          );
+          if (!link) {
+            throw new Error('No link found in email');
+          }
+          context.variables.set(action.saveTo, link);
+          break;
+        }
+        case 'email.clear': {
+          if (!context.emailClient) {
+            throw new Error('Email client not configured');
+          }
+          const mailbox = interpolateVariables(action.mailbox, context.variables);
+          await context.emailClient.clearMailbox(mailbox);
+          break;
+        }
+        case 'appwrite.verifyEmail': {
+          if (!context.appwriteContext.userId) {
+            throw new Error('No user tracked. appwrite.verifyEmail requires a user signup to have occurred first.');
+          }
+          if (!context.appwriteConfig?.apiKey) {
+            throw new Error('appwrite.verifyEmail requires appwrite.apiKey in config');
+          }
+          const { Client, Users } = await import('node-appwrite');
+          const client = new Client()
+            .setEndpoint(context.appwriteConfig.endpoint)
+            .setProject(context.appwriteConfig.projectId)
+            .setKey(context.appwriteConfig.apiKey);
+          const users = new Users(client);
+          await users.updateEmailVerification(context.appwriteContext.userId, true);
+          console.log(`Verified email for user ${context.appwriteContext.userId}`);
+          break;
+        }
+        case 'debug': {
+          console.log('[DEBUG] Pausing execution - Playwright Inspector will open');
+          await page.pause();
+          break;
+        }
+        default:
+          throw new Error(`Unsupported action type: ${(action as Action).type}`);
+      }
+
+      // Success - break out of retry loop
+      return;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+
+      if (interactive && aiConfig && hasTarget(action)) {
+        const choice = await handleInteractiveError(page, action, error, screenshotDir, index, aiConfig);
+
+        switch (choice) {
+          case 'retry':
+            console.log('Retrying with AI suggestion...\n');
+            // Note: In a full implementation, we would modify the action.target with the suggestion
+            // For now, just retry with the same selector
+            continue;
+          case 'skip':
+            console.log('Skipping step...\n');
+            return;
+          case 'debug':
+            console.log('Opening Playwright Inspector...\n');
+            await page.pause();
+            continue;
+          case 'abort':
+          default:
+            throw error;
+        }
+      }
+
+      // Non-interactive mode or debug mode - handle normally
+      if (debugMode) {
+        console.error(`[DEBUG] Action failed: ${error.message}`);
+        console.log('[DEBUG] Opening Playwright Inspector for debugging...');
+        await page.pause();
+      }
+
+      throw error;
+    }
+  }
+}
+
+function hasTarget(action: Action): boolean {
+  return 'target' in action && action.target !== undefined;
 }
 
 export const runWebTest = async (
@@ -414,11 +700,29 @@ export const runWebTest = async (
   const screenshotDir = options.screenshotDir ?? defaultScreenshotDir;
   const defaultTimeout = options.defaultTimeoutMs ?? 30000;
 
+  // Start tracking server for SSR resource tracking
+  const sessionId = crypto.randomUUID();
+  const trackingServer = new TrackingServer();
+  await trackingServer.start();
+
+  // Set env vars so the app can track resources
+  process.env.INTELLITESTER_SESSION_ID = sessionId;
+  process.env.INTELLITESTER_TRACK_URL = `http://localhost:${trackingServer.port}`;
+
   // Start webServer if configured
   let serverProcess: ChildProcess | null = null;
   if (options.webServer) {
     serverProcess = await startWebServer(options.webServer);
   }
+
+  // Handle Ctrl+C and termination signals
+  const cleanup = () => {
+    trackingServer.stop();
+    killServer(serverProcess);
+    process.exit(1);
+  };
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
 
   // Launch local browser
   const browser = await getBrowser(browserName).launch({ headless });
@@ -433,12 +737,21 @@ export const runWebTest = async (
     lastEmail: null,
     emailClient: null,
     appwriteContext: createTestContext(),
+    appwriteConfig: test.config?.appwrite ? {
+      endpoint: test.config.appwrite.endpoint,
+      projectId: test.config.appwrite.projectId,
+      apiKey: test.config.appwrite.apiKey,
+    } : undefined,
   };
 
   // Initialize email client if configured
   if (test.config?.email) {
+    const emailEndpoint = test.config.email.endpoint ?? process.env.INBUCKET_URL;
+    if (!emailEndpoint) {
+      throw new Error('Email testing requires endpoint in config or INBUCKET_URL env var');
+    }
     executionContext.emailClient = new InbucketClient({
-      endpoint: test.config.email.endpoint,
+      endpoint: emailEndpoint,
     });
   }
 
@@ -652,114 +965,60 @@ export const runWebTest = async (
   }
 
   const results: StepResult[] = [];
+  const debugMode = options.debug ?? false;
+  const interactive = options.interactive ?? false;
+
   try {
     for (const [index, action] of test.steps.entries()) {
-      try {
-        switch (action.type) {
-          case 'navigate':
-            await runNavigate(
-              page,
-              action.value,
-              options.baseUrl ?? test.config?.web?.baseUrl,
-              executionContext,
-            );
-            break;
-          case 'tap':
-            await runTap(page, action.target);
-            break;
-          case 'input':
-            await runInput(page, action.target, action.value, executionContext);
-            break;
-          case 'assert':
-            await runAssert(page, action.target, action.value, executionContext);
-            break;
-          case 'wait':
-            await runWait(page, action);
-            break;
-          case 'scroll':
-            await runScroll(page, action);
-            break;
-          case 'screenshot': {
-            const screenshotPath = await runScreenshot(page, action.name, screenshotDir, index);
-            results.push({ action, status: 'passed', screenshotPath });
-            continue;
-          }
-          case 'setVar': {
-            let value: string;
-            if (action.value) {
-              value = interpolateVariables(action.value, executionContext.variables);
-            } else if (action.from === 'response') {
-              // Extract from last network response (future)
-              throw new Error('setVar from response not yet implemented');
-            } else if (action.from === 'element') {
-              // Extract from DOM element (future)
-              throw new Error('setVar from element not yet implemented');
-            } else if (action.from === 'email') {
-              // Already handled by email.extractCode/extractLink
-              throw new Error('Use email.extractCode or email.extractLink instead');
-            } else {
-              throw new Error('setVar requires value or from');
-            }
-            executionContext.variables.set(action.name, value);
-            break;
-          }
-          case 'email.waitFor': {
-            if (!executionContext.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            const mailbox = interpolateVariables(action.mailbox, executionContext.variables);
-            executionContext.lastEmail = await executionContext.emailClient.waitForEmail(mailbox, {
-              timeout: action.timeout,
-              subjectContains: action.subjectContains,
-            });
-            break;
-          }
-          case 'email.extractCode': {
-            if (!executionContext.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            if (!executionContext.lastEmail) {
-              throw new Error('No email loaded - call email.waitFor first');
-            }
-            const code = executionContext.emailClient.extractCode(
-              executionContext.lastEmail,
-              action.pattern ? new RegExp(action.pattern) : undefined,
-            );
-            if (!code) {
-              throw new Error('No code found in email');
-            }
-            executionContext.variables.set(action.saveTo, code);
-            break;
-          }
-          case 'email.extractLink': {
-            if (!executionContext.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            if (!executionContext.lastEmail) {
-              throw new Error('No email loaded - call email.waitFor first');
-            }
-            const link = executionContext.emailClient.extractLink(
-              executionContext.lastEmail,
-              action.pattern ? new RegExp(action.pattern) : undefined,
-            );
-            if (!link) {
-              throw new Error('No link found in email');
-            }
-            executionContext.variables.set(action.saveTo, link);
-            break;
-          }
-          case 'email.clear': {
-            if (!executionContext.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            const mailbox = interpolateVariables(action.mailbox, executionContext.variables);
-            await executionContext.emailClient.clearMailbox(mailbox);
-            break;
-          }
-          default:
-            // Exhaustiveness guard
-            throw new Error(`Unsupported action type: ${(action as Action).type}`);
+      if (debugMode) {
+        console.log(`[DEBUG] Executing step ${index + 1}: ${action.type}`);
+      }
+
+      // Merge server-tracked resources before each action
+      const serverResources = trackingServer.getResources(sessionId);
+      for (const resource of serverResources) {
+        // Check for tracked users
+        if (resource.type === 'user' && !executionContext.appwriteContext.userId) {
+          executionContext.appwriteContext.userId = resource.id;
         }
+        // Add to resources if not already tracked (only for known types)
+        const knownTypes = ['row', 'file', 'user', 'team', 'membership', 'message'] as const;
+        if (knownTypes.includes(resource.type as any)) {
+          const exists = executionContext.appwriteContext.resources.some(
+            r => r.type === resource.type && r.id === resource.id
+          );
+          if (!exists) {
+            executionContext.appwriteContext.resources.push({
+              type: resource.type as TrackedResource['type'],
+              id: resource.id,
+              databaseId: resource.databaseId as string | undefined,
+              tableId: resource.tableId as string | undefined,
+              bucketId: resource.bucketId as string | undefined,
+              teamId: resource.teamId as string | undefined,
+              createdAt: resource.createdAt || new Date().toISOString(),
+            });
+          }
+        }
+      }
+
+      try {
+        // Handle screenshot separately since it has special return handling
+        if (action.type === 'screenshot') {
+          const screenshotPath = await runScreenshot(page, action.name, screenshotDir, index);
+          results.push({ action, status: 'passed', screenshotPath });
+          continue;
+        }
+
+        // Use the new executeActionWithRetry for all other actions
+        await executeActionWithRetry(page, action, index, {
+          baseUrl: options.baseUrl ?? test.config?.web?.baseUrl,
+          context: executionContext,
+          screenshotDir,
+          debugMode,
+          interactive,
+          aiConfig: options.aiConfig,
+        });
+
         results.push({ action, status: 'passed' });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -768,6 +1027,10 @@ export const runWebTest = async (
       }
     }
   } finally {
+    // Remove signal handlers
+    process.off('SIGINT', cleanup);
+    process.off('SIGTERM', cleanup);
+
     // Run Appwrite cleanup if configured
     if (test.config?.appwrite?.cleanup) {
       const appwriteClient = new AppwriteTestClient({
@@ -777,12 +1040,19 @@ export const runWebTest = async (
         cleanup: true,
       });
 
-      const cleanupResult = await appwriteClient.cleanup(executionContext.appwriteContext);
+      const cleanupResult = await appwriteClient.cleanup(
+        executionContext.appwriteContext,
+        sessionId,
+        process.cwd()
+      );
       console.log('Cleanup result:', cleanupResult);
     }
 
     await browserContext.close();
     await browser.close();
+
+    // Stop tracking server
+    trackingServer.stop();
 
     // Stop webServer if it was started
     killServer(serverProcess);

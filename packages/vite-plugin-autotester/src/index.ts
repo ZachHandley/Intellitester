@@ -1,4 +1,4 @@
-export { autotester } from './plugin';
-export type { AutotesterOptions, ComponentInfo } from './types';
+export { intellitester } from './plugin';
+export type { IntellitesterOptions, ComponentInfo } from './types';
 export { scanComponents, parseComponentName, getTestFilePath } from './scanner';
 export { generateTestStub, generateTestSuite } from './generator';

@@ -40,6 +40,10 @@ function formatActionName(step: StepResult, index: number): string {
       return `step-${index + 1}: extract link from email`;
     case 'email.clear':
       return `step-${index + 1}: clear email`;
+    case 'appwrite.verifyEmail':
+      return `step-${index + 1}: verify email via Appwrite`;
+    case 'debug':
+      return `step-${index + 1}: debug breakpoint`;
     default: {
       const exhaustiveCheck: never = action;
       return `step-${index + 1}: unknown action`;

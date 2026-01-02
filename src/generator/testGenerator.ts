@@ -7,7 +7,13 @@ import type { z } from 'zod';
 import { TestDefinitionSchema } from '../core/schema';
 import type { AIConfig } from '../ai/types';
 import { createAIProvider } from '../ai/provider';
-import { SYSTEM_PROMPT, buildPrompt, type PromptContext } from './prompts';
+import {
+  SYSTEM_PROMPT,
+  buildPrompt,
+  buildSourceAwareSystemPrompt,
+  type PromptContext,
+} from './prompts';
+import { scanProjectSource, type SourceConfig } from './sourceScanner';
 
 export interface GeneratorOptions {
   aiConfig: AIConfig;
@@ -15,6 +21,7 @@ export interface GeneratorOptions {
   platform?: 'web' | 'android' | 'ios';
   additionalContext?: string;
   maxRetries?: number;
+  source?: SourceConfig | null; // null = explicitly disabled, undefined = auto-detect
 }
 
 export interface GeneratorResult {
@@ -51,6 +58,17 @@ export async function generateTest(
 ): Promise<GeneratorResult> {
   const provider = createAIProvider(options.aiConfig);
 
+  // Scan source if configured (default to auto-detect)
+  let systemPrompt = SYSTEM_PROMPT;
+  if (options.source !== null) {
+    // null = explicitly disabled
+    const sourceConfig = options.source ?? {}; // empty = auto-detect
+    const scanResult = await scanProjectSource(sourceConfig);
+    if (scanResult.allElements.length > 0) {
+      systemPrompt = buildSourceAwareSystemPrompt(scanResult);
+    }
+  }
+
   const context: PromptContext = {
     baseUrl: options.baseUrl,
     platform: options.platform,
@@ -71,8 +89,8 @@ export async function generateTest(
         promptWithFeedback = `${userPrompt}\n\nPrevious attempt failed with error: ${lastError.message}\n\nPlease fix the issue and generate valid YAML.`;
       }
 
-      // Generate completion from AI
-      const response = await provider.generateCompletion(promptWithFeedback, SYSTEM_PROMPT);
+      // Generate completion from AI using the system prompt (possibly source-aware)
+      const response = await provider.generateCompletion(promptWithFeedback, systemPrompt);
 
       // Clean the response
       const yaml = cleanYamlResponse(response);

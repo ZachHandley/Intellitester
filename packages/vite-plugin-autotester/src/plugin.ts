@@ -1,32 +1,32 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Plugin, ViteDevServer, HmrContext } from 'vite';
-import type { AutotesterOptions } from './types';
+import type { IntellitesterOptions } from './types';
 import { scanComponents, getTestFilePath } from './scanner';
 import { generateTestStub, generateTestSuite } from './generator';
 
-const DEFAULT_OPTIONS: Required<AutotesterOptions> = {
+const DEFAULT_OPTIONS: Required<IntellitesterOptions> = {
   testsDir: './tests',
   include: [],
   runOnBuild: false,
   watchTests: true,
-  configPath: 'autotester.config.yaml',
-  endpoint: '/__autotester',
+  configPath: 'intellitester.config.yaml',
+  endpoint: '/__intellitester',
 };
 
 /**
- * Creates the AutoTester Vite plugin
+ * Creates the IntelliTester Vite plugin
  * @param options Plugin configuration options
  * @returns Vite plugin
  */
-export function autotester(options: AutotesterOptions = {}): Plugin {
+export function intellitester(options: IntellitesterOptions = {}): Plugin {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   let server: ViteDevServer | undefined;
   let root: string = process.cwd();
   let baseUrl: string | undefined;
 
   return {
-    name: 'vite-plugin-autotester',
+    name: 'vite-plugin-intellitester',
     enforce: 'pre',
 
     configResolved(config) {
@@ -40,7 +40,7 @@ export function autotester(options: AutotesterOptions = {}): Plugin {
     configureServer(devServer: ViteDevServer) {
       server = devServer;
 
-      // Add middleware for the AutoTester endpoint
+      // Add middleware for the IntelliTester endpoint
       devServer.middlewares.use(opts.endpoint, async (req, res) => {
         if (req.method !== 'GET') {
           res.statusCode = 405;
@@ -116,10 +116,10 @@ export function autotester(options: AutotesterOptions = {}): Plugin {
           }
 
           if (createdCount > 0) {
-            console.log(`\n[autotester] Generated ${createdCount} test stub(s) in ${opts.testsDir}\n`);
+            console.log(`\n[intellitester] Generated ${createdCount} test stub(s) in ${opts.testsDir}\n`);
           }
         } catch (error) {
-          console.error('[autotester] Error generating test stubs:', error);
+          console.error('[intellitester] Error generating test stubs:', error);
         }
       }
     },
@@ -127,19 +127,19 @@ export function autotester(options: AutotesterOptions = {}): Plugin {
     async buildEnd() {
       // Run tests if runOnBuild is enabled
       if (opts.runOnBuild) {
-        console.log('\n[autotester] Running tests after build...\n');
-        // TODO: Execute AutoTester CLI or programmatic API
-        // This would require AutoTester to be installed as a dependency
-        console.log('[autotester] Test execution not yet implemented');
+        console.log('\n[intellitester] Running tests after build...\n');
+        // TODO: Execute IntelliTester CLI or programmatic API
+        // This would require IntelliTester to be installed as a dependency
+        console.log('[intellitester] Test execution not yet implemented');
       }
     },
 
     handleHotUpdate(ctx: HmrContext) {
       // Re-run tests if a test file changed and watchTests is enabled
       if (opts.watchTests && ctx.file.endsWith('.yaml') && ctx.file.includes(opts.testsDir)) {
-        console.log(`\n[autotester] Test file changed: ${path.relative(root, ctx.file)}\n`);
-        // TODO: Execute AutoTester CLI or programmatic API for the specific test
-        console.log('[autotester] Test re-execution not yet implemented');
+        console.log(`\n[intellitester] Test file changed: ${path.relative(root, ctx.file)}\n`);
+        // TODO: Execute IntelliTester CLI or programmatic API for the specific test
+        console.log('[intellitester] Test re-execution not yet implemented');
       }
     },
   };
@@ -163,7 +163,7 @@ function generateTestRunnerHtml(info: {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AutoTester - Test Runner</title>
+  <title>IntelliTester - Test Runner</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -275,7 +275,7 @@ function generateTestRunnerHtml(info: {
 <body>
   <div class="container">
     <h1>
-      🤖 AutoTester
+      🤖 IntelliTester
       ${testsExist ? '<span class="status success">Tests Found</span>' : '<span class="status warning">No Tests</span>'}
       ${configExists ? '<span class="status success">Config Found</span>' : '<span class="status warning">No Config</span>'}
     </h1>
@@ -318,7 +318,7 @@ function generateTestRunnerHtml(info: {
 
     <div style="margin-top: 2rem; padding-top: 2rem; border-top: 1px solid #dee2e6;">
       <p style="font-size: 0.875rem; color: #6c757d;">
-        To run tests, use the AutoTester CLI: <code>npx autotester run</code>
+        To run tests, use the IntelliTester CLI: <code>npx intellitester run</code>
       </p>
     </div>
   </div>

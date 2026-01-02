@@ -9,12 +9,12 @@ import type { ComponentInfo } from './types';
 export function generateTestStub(component: ComponentInfo, baseUrl?: string): string {
   const { name, relativePath } = component;
 
-  // Create a simple test stub following AutoTester's TestDefinitionSchema
+  // Create a simple test stub following IntelliTester's TestDefinitionSchema
   const yaml = `# Auto-generated test stub for ${name}
 # Component: ${relativePath}
 #
 # This is a template - customize the steps based on your component's behavior
-# See AutoTester docs for available actions and locators
+# See IntelliTester docs for available actions and locators
 
 name: ${name} Component Test
 platform: web

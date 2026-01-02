@@ -1,5 +1,6 @@
 import { Client, Users, TablesDB, Storage, Teams } from 'node-appwrite';
 import type { TrackedResource, TestContext, AppwriteCleanupConfig } from './types';
+import { saveFailedCleanup } from '../../core/cleanup/persistence.js';
 
 export class AppwriteTestClient {
   private client: Client;
@@ -22,7 +23,11 @@ export class AppwriteTestClient {
     this.teams = new Teams(this.client);
   }
 
-  async cleanup(context: TestContext): Promise<{ success: boolean; deleted: string[]; failed: string[] }> {
+  async cleanup(
+    context: TestContext,
+    sessionId?: string,
+    cwd?: string
+  ): Promise<{ success: boolean; deleted: string[]; failed: string[] }> {
     const deleted: string[] = [];
     const failed: string[] = [];
 
@@ -85,6 +90,32 @@ export class AppwriteTestClient {
         failed.push(`user:${context.userId}`);
         console.warn(`Failed to delete user ${context.userId}:`, error);
       }
+    }
+
+    // Persist failed cleanup if there are failures
+    if (failed.length > 0 && sessionId) {
+      const failedResources = context.resources.filter(r =>
+        failed.some(f => f.includes(r.id))
+      );
+
+      await saveFailedCleanup({
+        sessionId,
+        timestamp: new Date().toISOString(),
+        resources: failedResources.map(r => ({
+          type: r.type,
+          id: r.id,
+          databaseId: r.databaseId,
+          tableId: r.tableId,
+          bucketId: r.bucketId,
+          teamId: r.teamId,
+        })),
+        providerConfig: {
+          provider: 'appwrite',
+          endpoint: this.config.endpoint,
+          projectId: this.config.projectId,
+        },
+        errors: failed,
+      }, cwd);
     }
 
     return { success: failed.length === 0, deleted, failed };

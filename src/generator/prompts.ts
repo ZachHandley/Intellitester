@@ -2,6 +2,8 @@
  * System prompts and prompt building for test generation
  */
 
+import { type SourceScanResult, formatScanResultsForPrompt } from './sourceScanner';
+
 export const SYSTEM_PROMPT = `You are a test automation expert that converts natural language test descriptions into YAML test definitions.
 
 ## Schema Structure
@@ -203,6 +205,143 @@ export function buildPrompt(naturalLanguage: string, context?: PromptContext): s
   }
 
   parts.push('', 'Output only valid YAML without code block markers.');
+
+  return parts.join('\n');
+}
+
+/**
+ * Builds a source-aware system prompt that includes actual routes and elements from the project
+ */
+export function buildSourceAwareSystemPrompt(scanResult: SourceScanResult): string {
+  const parts: string[] = [
+    'You are a test automation expert that converts natural language test descriptions into YAML test definitions.',
+    '',
+    '## Schema Structure',
+    '',
+    'A test definition must have:',
+    '- name: A descriptive test name (non-empty string)',
+    '- platform: One of \'web\', \'android\', or \'ios\'',
+    '- config: Optional configuration object',
+    '- steps: Array of actions (minimum 1 action required)',
+    '',
+    '## Available Actions',
+    '',
+    '1. navigate - Navigate to a URL',
+    '   { type: \'navigate\', value: string }',
+    '',
+    '2. tap - Click or tap an element',
+    '   { type: \'tap\', target: Locator }',
+    '',
+    '3. input - Type text into an input field',
+    '   { type: \'input\', target: Locator, value: string }',
+    '',
+    '4. assert - Assert element exists or contains text',
+    '   { type: \'assert\', target: Locator, value?: string }',
+    '',
+    '5. wait - Wait for an element or timeout',
+    '   { type: \'wait\', target?: Locator, timeout?: number }',
+    '   Note: Requires either target or timeout',
+    '',
+    '6. scroll - Scroll the page or to an element',
+    '   { type: \'scroll\', target?: Locator, direction?: \'up\'|\'down\', amount?: number }',
+    '',
+    '7. screenshot - Take a screenshot',
+    '   { type: \'screenshot\', name?: string }',
+    '',
+    '## Locator Structure',
+    '',
+    'A locator must have AT LEAST ONE of these properties:',
+    '- description: Human-readable description for AI healing',
+    '- testId: data-testid attribute value',
+    '- text: Text content to match',
+    '- css: CSS selector',
+    '- xpath: XPath expression',
+    '- role: ARIA role attribute',
+    '- name: Accessible name',
+    '',
+    '## PROJECT STRUCTURE',
+    '',
+    'The following routes and elements were extracted from the project source code.',
+    'Use these REAL selectors in your generated tests.',
+    '',
+    '### Selector Priority (prefer earlier options):',
+    '1. text - Most resilient to DOM changes',
+    '2. role + name - ARIA-compliant, accessible',
+    '3. testId - Explicit but requires dev setup',
+    '4. css - Last resort, fragile',
+    '',
+  ];
+
+  // Add the formatted scan results
+  parts.push(formatScanResultsForPrompt(scanResult));
+
+  // Add configuration and examples
+  parts.push(
+    '## Configuration Options',
+    '',
+    'web:',
+    '  baseUrl: Base URL for the application',
+    '  browser: Browser to use (e.g., \'chromium\', \'firefox\', \'webkit\')',
+    '  headless: Run browser in headless mode (boolean)',
+    '  timeout: Default timeout in milliseconds',
+    '',
+    'android:',
+    '  appId: Android application package ID',
+    '  device: Device name or ID',
+    '',
+    'ios:',
+    '  bundleId: iOS bundle identifier',
+    '  simulator: Simulator name',
+    '',
+    '## Example Test Structure',
+    '',
+    '```yaml',
+    'name: Example test name',
+    'platform: web',
+    'config:',
+    '  web:',
+    '    baseUrl: https://example.com',
+    '    headless: true',
+    'steps:',
+    '  - type: navigate',
+    '    value: /login',
+    '  - type: input',
+    '    target:',
+    '      text: Email',
+    '      description: Email input field',
+    '    value: test@example.com',
+    '  - type: input',
+    '    target:',
+    '      role: textbox',
+    '      name: Password',
+    '      description: Password input field',
+    '    value: password123',
+    '  - type: tap',
+    '    target:',
+    '      text: Sign In',
+    '      role: button',
+    '      description: Sign in button',
+    '  - type: assert',
+    '    target:',
+    '      text: Welcome',
+    '      description: Welcome message after login',
+    '```',
+    '',
+    '## Important Instructions',
+    '',
+    '1. Output ONLY valid YAML - no markdown code blocks, no explanations',
+    '2. Use REAL selectors from the project structure above whenever possible',
+    '3. Every locator MUST have at least one selector property',
+    '4. Include descriptive locator descriptions for AI healing',
+    '5. Prefer text and role selectors over testId and css for resilience',
+    '6. Use multiple locator strategies when possible for resilience',
+    '7. For wait actions, provide either a target or timeout (or both)',
+    '8. Use appropriate platform-specific configurations',
+    '9. Ensure all strings are properly quoted if they contain special characters',
+    '10. Action steps must be in logical order',
+    '',
+    'Generate the test definition now based on the user\'s description.',
+  );
 
   return parts.join('\n');
 }

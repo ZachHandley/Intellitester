@@ -1,10 +1,10 @@
 ---
 // Test runner page injected by the integration
-const testResults = await Astro.locals.autotesterResults || [];
+const testResults = await Astro.locals.intellitesterResults || [];
 ---
 <html>
 <head>
-  <title>AutoTester Results</title>
+  <title>IntelliTester Results</title>
   <style>
     body { font-family: system-ui; padding: 2rem; }
     .pass { color: green; }
@@ -12,10 +12,10 @@ const testResults = await Astro.locals.autotesterResults || [];
   </style>
 </head>
 <body>
-  <h1>AutoTester Results</h1>
+  <h1>IntelliTester Results</h1>
   <div id="results">
     {testResults.length === 0 ? (
-      <p>No tests run yet. Run <code>autotester run</code> to execute tests.</p>
+      <p>No tests run yet. Run <code>intellitester run</code> to execute tests.</p>
     ) : (
       testResults.map(r => (
         <div class={r.status}>

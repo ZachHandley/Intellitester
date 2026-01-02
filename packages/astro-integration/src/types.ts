@@ -1,4 +1,4 @@
-export interface AstroAutotesterOptions {
+export interface AstroIntellitesterOptions {
   // Inherited from Vite plugin
   testsDir?: string;
   runOnBuild?: boolean;

@@ -1,15 +1,15 @@
 import type { AstroIntegration } from 'astro';
-import { autotester as vitePlugin } from 'vite-plugin-autotester';
-import type { AstroAutotesterOptions } from './types';
+import { intellitester as vitePlugin } from 'vite-plugin-intellitester';
+import type { AstroIntellitesterOptions } from './types';
 import { validateSSROutput } from './ssr-testing';
 import { testHydrationDirectives } from './hydration';
 
-export function createIntegration(options: AstroAutotesterOptions = {}): AstroIntegration {
+export function createIntegration(options: AstroIntellitesterOptions = {}): AstroIntegration {
   return {
-    name: '@autotester/astro',
+    name: '@intellitester/astro',
     hooks: {
       'astro:config:setup': ({ updateConfig, injectRoute, logger }) => {
-        logger.info('Setting up AutoTester integration');
+        logger.info('Setting up IntelliTester integration');
 
         // Add Vite plugin
         updateConfig({
@@ -23,13 +23,13 @@ export function createIntegration(options: AstroAutotesterOptions = {}): AstroIn
 
         // Inject test runner route
         injectRoute({
-          pattern: '/__autotester',
-          entrypoint: '@autotester/astro/pages/test-runner.astro'
+          pattern: '/__intellitester',
+          entrypoint: '@intellitester/astro/pages/test-runner.astro'
         });
       },
 
       'astro:server:setup': ({ server, logger }) => {
-        logger.info('AutoTester dev server ready');
+        logger.info('IntelliTester dev server ready');
         // Could add custom middleware here
       },
 

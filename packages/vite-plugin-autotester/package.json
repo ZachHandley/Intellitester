@@ -1,7 +1,7 @@
 {
-  "name": "vite-plugin-autotester",
+  "name": "vite-plugin-intellitester",
   "version": "1.0.0",
-  "description": "Vite plugin for integrating AutoTester into Vite projects",
+  "description": "Vite plugin for integrating IntelliTester into Vite projects",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -18,14 +18,23 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://forge.blackleafdigital.com/zachhandley/Intellitester.git",
+    "directory": "packages/vite-plugin-autotester"
+  },
+  "homepage": "https://github.com/ZachHandley/Intellitester",
+  "bugs": {
+    "url": "https://github.com/ZachHandley/Intellitester/issues"
+  },
   "keywords": [
     "vite",
     "plugin",
     "testing",
-    "autotester",
+    "intellitester",
     "e2e"
   ],
-  "author": "Zach Handley <zachhandley@gmail.com>",
+  "author": "Zach Handley <zachhandley@gmail.com> (https://zachhandley.com)",
   "license": "MIT",
   "peerDependencies": {
     "vite": "^5.0.0 || ^6.0.0 || ^7.0.0"

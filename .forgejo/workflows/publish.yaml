@@ -21,8 +21,6 @@ concurrency:
 env:
   NODE_VERSION: '22'
   PNPM_VERSION: '10'
-  REGISTRY: forge.blackleafdigital.com
-  REGISTRY_SCOPE: '@blackleafdigital'
 
 jobs:
   # ===========================================
@@ -52,7 +50,7 @@ jobs:
   # Build and Publish to npm Registry
   # ===========================================
   publish-npm:
-    name: Publish to Forgejo npm Registry
+    name: Publish to npm
     runs-on: ubuntu-latest
     needs: version
     steps:
@@ -69,8 +67,7 @@ jobs:
 
       - name: Configure npm auth
         run: |
-          echo "//forge.blackleafdigital.com/api/packages/blackleafdigital/npm/:_authToken=${{ secrets.FORGEJO_ACTIONS_TOKEN }}" >> ~/.npmrc
-          echo "registry=https://forge.blackleafdigital.com/api/packages/blackleafdigital/npm/" >> ~/.npmrc
+          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_ACCESS_TOKEN }}" >> ~/.npmrc
 
       - name: Restore cache
         uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
@@ -111,18 +108,18 @@ jobs:
         if: ${{ inputs.dry_run != 'true' }}
         run: |
           # Publish root package
-          pnpm publish --no-git-checks --registry https://forge.blackleafdigital.com/api/packages/blackleafdigital/npm/
+          pnpm publish --no-git-checks --access public
 
           # Publish workspace packages if they exist
           if [ -d "packages/astro-integration" ]; then
             cd packages/astro-integration
-            pnpm publish --no-git-checks --registry https://forge.blackleafdigital.com/api/packages/blackleafdigital/npm/
+            pnpm publish --no-git-checks --access public
             cd ../..
           fi
 
           if [ -d "packages/vite-plugin-autotester" ]; then
             cd packages/vite-plugin-autotester
-            pnpm publish --no-git-checks --registry https://forge.blackleafdigital.com/api/packages/blackleafdigital/npm/
+            pnpm publish --no-git-checks --access public
             cd ../..
           fi
 
@@ -181,7 +178,7 @@ jobs:
 
           # Save to file for multiline handling
           cat > /tmp/changelog.txt << EOF
-          ## AutoTester ${{ needs.version.outputs.version }}
+          ## IntelliTester ${{ needs.version.outputs.version }}
 
           ### Changes
           ${COMMITS}
@@ -190,23 +187,25 @@ jobs:
 
           #### npm
           \`\`\`bash
-          npm install autotester@${{ needs.version.outputs.tag }}
+          npm install intellitester@${{ needs.version.outputs.tag }}
           \`\`\`
 
           #### pnpm
           \`\`\`bash
-          pnpm add autotester@${{ needs.version.outputs.tag }}
+          pnpm add intellitester@${{ needs.version.outputs.tag }}
           \`\`\`
 
           #### CLI
           \`\`\`bash
-          npx autotester@${{ needs.version.outputs.tag }}
+          npx intellitester@${{ needs.version.outputs.tag }}
           \`\`\`
 
           ### Packages Published
-          - autotester@${{ needs.version.outputs.tag }}
+          - intellitester@${{ needs.version.outputs.tag }}
+          - intellitester-astro@${{ needs.version.outputs.tag }}
+          - vite-plugin-intellitester@${{ needs.version.outputs.tag }}
 
-          Published to: https://forge.blackleafdigital.com/blackleafdigital/-/packages/npm/autotester
+          Published to: https://www.npmjs.com/package/intellitester
           EOF
 
       - name: Create Forgejo Release
@@ -230,7 +229,7 @@ jobs:
             "https://forge.blackleafdigital.com/api/v1/repos/${{ github.repository }}/releases" \
             -d "{
               \"tag_name\": \"${VERSION}\",
-              \"name\": \"AutoTester ${VERSION}\",
+              \"name\": \"IntelliTester ${VERSION}\",
               \"body\": $(echo "$BODY" | jq -Rs .),
               \"draft\": false,
               \"prerelease\": ${PRERELEASE}

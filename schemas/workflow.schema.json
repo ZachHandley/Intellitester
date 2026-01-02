@@ -1,0 +1,227 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "IntelliTester Workflow Definition",
+  "description": "Schema for IntelliTester workflow files (*.workflow.yaml) that orchestrate multiple tests",
+  "type": "object",
+  "required": ["name", "tests"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The name of the workflow",
+      "examples": ["Full E2E Suite", "User Onboarding Flow", "Payment Integration Tests"]
+    },
+    "platform": {
+      "type": "string",
+      "enum": ["web", "android", "ios"],
+      "description": "The platform to run the workflow on",
+      "default": "web"
+    },
+    "continueOnFailure": {
+      "type": "boolean",
+      "description": "Continue running subsequent tests even if a test fails",
+      "default": false
+    },
+    "config": {
+      "type": "object",
+      "description": "Workflow-level configuration that applies to all tests",
+      "properties": {
+        "web": {
+          "type": "object",
+          "description": "Web platform configuration for the workflow",
+          "properties": {
+            "baseUrl": {
+              "type": "string",
+              "format": "uri",
+              "description": "Base URL for all tests in this workflow",
+              "examples": ["https://example.com", "http://localhost:3000"]
+            },
+            "browser": {
+              "type": "string",
+              "enum": ["chromium", "firefox", "webkit"],
+              "description": "Browser to use for all web tests",
+              "default": "chromium"
+            },
+            "headless": {
+              "type": "boolean",
+              "description": "Run browser in headless mode",
+              "default": true
+            }
+          }
+        },
+        "appwrite": {
+          "type": "object",
+          "description": "Appwrite backend configuration for the workflow",
+          "properties": {
+            "endpoint": {
+              "type": "string",
+              "format": "uri",
+              "description": "Appwrite API endpoint",
+              "examples": ["https://cloud.appwrite.io/v1"]
+            },
+            "projectId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Appwrite project ID"
+            },
+            "apiKey": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Appwrite API key"
+            },
+            "cleanup": {
+              "type": "boolean",
+              "description": "Enable automatic cleanup of created resources",
+              "default": true
+            },
+            "cleanupOnFailure": {
+              "type": "boolean",
+              "description": "Clean up resources even when tests fail",
+              "default": true
+            }
+          },
+          "required": ["endpoint", "projectId", "apiKey"]
+        },
+        "cleanup": {
+          "type": "object",
+          "description": "Resource cleanup configuration",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "description": "Cleanup provider to use",
+              "examples": ["appwrite", "postgres", "mysql", "sqlite"]
+            },
+            "parallel": {
+              "type": "boolean",
+              "description": "Run cleanup tasks in parallel",
+              "default": false
+            },
+            "retries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "description": "Number of retry attempts for failed cleanup operations",
+              "default": 3
+            },
+            "types": {
+              "type": "object",
+              "description": "Map resource types to cleanup handler methods",
+              "additionalProperties": {
+                "type": "string"
+              },
+              "examples": [
+                {
+                  "row": "appwrite.deleteRow",
+                  "team": "appwrite.deleteTeam",
+                  "stripe_customer": "stripe.deleteCustomer"
+                }
+              ]
+            },
+            "handlers": {
+              "type": "array",
+              "description": "Explicit paths to custom cleanup handler files",
+              "items": {
+                "type": "string"
+              },
+              "examples": [["./src/cleanup/stripe.ts", "./tests/cleanup/custom.ts"]]
+            },
+            "discover": {
+              "type": "object",
+              "description": "Auto-discovery configuration for cleanup handlers",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "description": "Enable auto-discovery of cleanup handlers",
+                  "default": true
+                },
+                "paths": {
+                  "type": "array",
+                  "description": "Directories to search for cleanup handlers",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": ["./tests/cleanup"]
+                },
+                "pattern": {
+                  "type": "string",
+                  "description": "Glob pattern for handler files",
+                  "default": "**/*.ts"
+                }
+              }
+            }
+          }
+        },
+        "webServer": {
+          "type": "object",
+          "description": "Configuration for starting a web server before tests",
+          "required": ["url"],
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Command to start the web server",
+              "examples": ["npm run dev", "pnpm start", "python -m http.server"]
+            },
+            "auto": {
+              "type": "boolean",
+              "description": "Auto-detect server start command from package.json",
+              "default": false
+            },
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "URL to wait for before starting tests",
+              "examples": ["http://localhost:3000"]
+            },
+            "reuseExistingServer": {
+              "type": "boolean",
+              "description": "Use existing server if already running at the URL",
+              "default": true
+            },
+            "timeout": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Timeout in milliseconds to wait for server to start",
+              "default": 30000
+            }
+          }
+        }
+      }
+    },
+    "tests": {
+      "type": "array",
+      "description": "List of test files to execute in this workflow",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["file"],
+        "properties": {
+          "file": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Path to the test file relative to the workflow file",
+            "examples": ["./login.test.yaml", "./tests/signup.test.yaml", "../shared/auth.test.yaml"]
+          },
+          "id": {
+            "type": "string",
+            "description": "Optional ID for referencing this test in variables or dependencies",
+            "examples": ["login", "signup", "checkout"]
+          },
+          "variables": {
+            "type": "object",
+            "description": "Variables to inject or override for this specific test",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "examples": [
+              {
+                "BASE_URL": "https://staging.example.com",
+                "TEST_USER": "workflow-user@example.com"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

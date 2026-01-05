@@ -11,7 +11,7 @@ import { Command } from 'commander';
 
 import { spawn, type ChildProcess } from 'node:child_process';
 
-import { loadIntellitesterConfig, loadTestDefinition, loadWorkflowDefinition, isWorkflowFile, isPipelineFile, loadPipelineDefinition, collectMissingEnvVars } from '../core/loader';
+import { loadIntellitesterConfig, loadTestDefinition, loadWorkflowDefinition, isWorkflowFile, isPipelineFile, loadPipelineDefinition, collectMissingEnvVars, isWorkflowContent, isPipelineContent } from '../core/loader';
 import { runPipeline } from '../executors/web/pipelineExecutor';
 import type { TestDefinition } from '../core/types';
 import { runWebTest, type BrowserName } from '../executors/web';
@@ -842,6 +842,19 @@ const main = async (): Promise<void> => {
 
         // Check if it's a workflow file
         if (isWorkflowFile(file)) {
+          await runWorkflowCommand(file, runOpts);
+          return;
+        }
+
+        // Content-based detection as fallback
+        const fileContent = await fs.readFile(path.resolve(file), 'utf8');
+        if (isPipelineContent(fileContent)) {
+          console.log(`Note: Detected as pipeline by content structure`);
+          await runPipelineCommand(file, runOpts);
+          return;
+        }
+        if (isWorkflowContent(fileContent)) {
+          console.log(`Note: Detected as workflow by content structure`);
           await runWorkflowCommand(file, runOpts);
           return;
         }

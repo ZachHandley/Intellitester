@@ -143,3 +143,27 @@ export const collectMissingEnvVars = (obj: unknown): string[] => {
   collect(obj);
   return missing;
 };
+
+/**
+ * Detect if YAML content is a workflow by checking for 'tests' array.
+ */
+export const isWorkflowContent = (content: string): boolean => {
+  try {
+    const parsed = parse(content);
+    return parsed && Array.isArray(parsed.tests) && !parsed.steps && !parsed.workflows;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Detect if YAML content is a pipeline by checking for 'workflows' array.
+ */
+export const isPipelineContent = (content: string): boolean => {
+  try {
+    const parsed = parse(content);
+    return parsed && Array.isArray(parsed.workflows) && !parsed.steps;
+  } catch {
+    return false;
+  }
+};

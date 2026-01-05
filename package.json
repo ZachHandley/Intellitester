@@ -65,7 +65,8 @@
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "format": "prettier --check \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
-    "format:fix": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\""
+    "format:fix": "prettier --write \"**/*.{ts,tsx,js,json,md,yaml,yml}\"",
+    "generate:schemas": "tsx scripts/generate-schemas.ts"
   },
   "repository": {
     "type": "git",

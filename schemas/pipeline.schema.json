@@ -1,15 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "description": "Schema for IntelliTester workflow files that orchestrate multiple tests",
+  "description": "Schema for IntelliTester pipeline files that orchestrate multiple workflows",
   "type": "object",
   "properties": {
     "name": {
-      "description": "The name of the workflow",
+      "description": "The name of the pipeline",
       "type": "string",
       "minLength": 1
     },
     "platform": {
-      "description": "The platform to run the workflow on",
+      "description": "The platform to run the pipeline on",
       "default": "web",
       "type": "string",
       "enum": [
@@ -19,15 +19,15 @@
       ]
     },
     "config": {
-      "description": "Workflow-level configuration that applies to all tests",
+      "description": "Pipeline-level configuration that applies to all workflows",
       "type": "object",
       "properties": {
         "web": {
-          "description": "Web platform configuration for the workflow",
+          "description": "Web platform configuration for the pipeline",
           "type": "object",
           "properties": {
             "baseUrl": {
-              "description": "Base URL for all tests in this workflow",
+              "description": "Base URL for all workflows in this pipeline",
               "type": "string",
               "minLength": 1,
               "format": "uri"
@@ -49,7 +49,7 @@
           "additionalProperties": false
         },
         "appwrite": {
-          "description": "Appwrite backend configuration for the workflow",
+          "description": "Appwrite backend configuration for the pipeline",
           "type": "object",
           "properties": {
             "endpoint": {
@@ -74,7 +74,7 @@
               "type": "boolean"
             },
             "cleanupOnFailure": {
-              "description": "Clean up resources even when tests fail",
+              "description": "Clean up resources even when workflows fail",
               "default": true,
               "type": "boolean"
             }
@@ -156,16 +156,22 @@
                 "pattern"
               ],
               "additionalProperties": false
+            },
+            "on_failure": {
+              "description": "Run cleanup even if pipeline fails",
+              "default": true,
+              "type": "boolean"
             }
           },
           "required": [
             "parallel",
-            "retries"
+            "retries",
+            "on_failure"
           ],
           "additionalProperties": {}
         },
         "webServer": {
-          "description": "Configuration for starting a web server before tests",
+          "description": "Configuration for starting a web server before workflows",
           "type": "object",
           "properties": {
             "command": {
@@ -178,7 +184,7 @@
               "type": "boolean"
             },
             "url": {
-              "description": "URL to wait for before starting tests",
+              "description": "URL to wait for before starting workflows",
               "type": "string",
               "minLength": 1,
               "format": "uri"
@@ -206,31 +212,58 @@
       },
       "additionalProperties": false
     },
-    "continueOnFailure": {
-      "description": "Continue running subsequent tests even if a test fails",
-      "default": false,
+    "on_failure": {
+      "description": "Default failure handling for workflows",
+      "default": "skip",
+      "type": "string",
+      "enum": [
+        "skip",
+        "fail",
+        "ignore"
+      ]
+    },
+    "cleanup_on_failure": {
+      "description": "Run cleanup even when pipeline fails",
+      "default": true,
       "type": "boolean"
     },
-    "tests": {
-      "description": "List of test files to execute in this workflow",
+    "workflows": {
+      "description": "List of workflow files to execute in this pipeline",
       "minItems": 1,
       "type": "array",
       "items": {
-        "description": "Reference to a test file",
+        "description": "Reference to a workflow file",
         "type": "object",
         "properties": {
           "file": {
-            "description": "Path to the test file relative to the workflow file",
+            "description": "Path to the workflow file",
             "type": "string",
             "minLength": 1
           },
           "id": {
-            "description": "Optional ID for referencing this test in variables or dependencies",
+            "description": "Optional ID for referencing this workflow in dependencies",
             "type": "string",
             "minLength": 1
           },
+          "depends_on": {
+            "description": "IDs of workflows that must complete before this one",
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "on_failure": {
+            "description": "How to handle failure of this workflow",
+            "type": "string",
+            "enum": [
+              "skip",
+              "fail",
+              "ignore"
+            ]
+          },
           "variables": {
-            "description": "Variables to inject or override for this specific test",
+            "description": "Variables to inject or override for this workflow",
             "type": "object",
             "propertyNames": {
               "type": "string"
@@ -250,9 +283,10 @@
   "required": [
     "name",
     "platform",
-    "continueOnFailure",
-    "tests"
+    "on_failure",
+    "cleanup_on_failure",
+    "workflows"
   ],
   "additionalProperties": false,
-  "title": "IntelliTester Workflow Definition"
+  "title": "IntelliTester Pipeline Definition"
 }

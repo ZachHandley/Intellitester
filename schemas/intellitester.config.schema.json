@@ -1,424 +1,430 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "IntelliTester Configuration",
-  "description": "Schema for intellitester.config.yaml - the global configuration file for IntelliTester",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Global configuration file for IntelliTester",
   "type": "object",
   "properties": {
     "defaults": {
-      "type": "object",
       "description": "Default settings that apply to all tests unless overridden",
+      "type": "object",
       "properties": {
         "timeout": {
-          "type": "integer",
-          "minimum": 1,
           "description": "Default timeout in milliseconds for all actions",
-          "examples": [30000, 60000],
-          "default": 30000
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "screenshots": {
-          "type": "string",
-          "enum": ["on-failure", "always", "never"],
           "description": "When to capture screenshots during test execution",
-          "default": "on-failure"
+          "type": "string",
+          "enum": [
+            "on-failure",
+            "always",
+            "never"
+          ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ai": {
-      "type": "object",
       "description": "AI configuration for test generation and healing",
-      "required": ["provider", "model"],
+      "type": "object",
       "properties": {
         "provider": {
-          "type": "string",
-          "enum": ["anthropic", "openai", "ollama"],
           "description": "AI provider to use for test generation",
-          "examples": ["anthropic"]
+          "type": "string",
+          "enum": [
+            "anthropic",
+            "openai",
+            "ollama"
+          ]
         },
         "model": {
-          "type": "string",
-          "minLength": 1,
           "description": "Model name to use",
-          "examples": [
-            "claude-3-5-sonnet-20241022",
-            "gpt-4",
-            "gpt-4-turbo",
-            "llama2",
-            "codellama"
-          ]
+          "type": "string",
+          "minLength": 1
         },
         "apiKey": {
-          "type": "string",
-          "description": "API key for the AI provider (can use environment variables)",
-          "examples": ["${ANTHROPIC_API_KEY}", "${OPENAI_API_KEY}"]
+          "description": "API key for the AI provider",
+          "type": "string"
         },
         "baseUrl": {
+          "description": "Base URL for the AI API (required for Ollama)",
           "type": "string",
-          "format": "uri",
-          "description": "Base URL for the AI API (required for Ollama, optional for others)",
-          "examples": ["http://localhost:11434", "https://api.openai.com/v1"]
+          "format": "uri"
         },
         "temperature": {
+          "description": "Temperature for AI generation (0 = deterministic, 2 = very creative)",
+          "default": 0.2,
           "type": "number",
           "minimum": 0,
-          "maximum": 2,
-          "description": "Temperature for AI generation (0 = deterministic, 2 = very creative)",
-          "default": 0.2
+          "maximum": 2
         },
         "maxTokens": {
-          "type": "integer",
-          "minimum": 1,
           "description": "Maximum tokens for AI responses",
-          "default": 4096
+          "default": 4096,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "source": {
-          "type": "object",
           "description": "Source code directories for AI to analyze when generating tests",
+          "type": "object",
           "properties": {
             "pagesDir": {
-              "type": "string",
               "description": "Directory containing page components",
-              "examples": ["./src/pages", "./app", "./routes"]
+              "type": "string"
             },
             "componentsDir": {
-              "type": "string",
               "description": "Directory containing reusable components",
-              "examples": ["./src/components", "./app/components"]
+              "type": "string"
             },
             "extensions": {
-              "type": "array",
               "description": "File extensions to include in source code analysis",
+              "default": [
+                ".vue",
+                ".astro",
+                ".tsx",
+                ".jsx",
+                ".svelte"
+              ],
+              "type": "array",
               "items": {
                 "type": "string"
-              },
-              "default": [".vue", ".astro", ".tsx", ".jsx", ".svelte"],
-              "examples": [[".tsx", ".jsx", ".vue"]]
+              }
             }
-          }
+          },
+          "required": [
+            "extensions"
+          ],
+          "additionalProperties": false
         }
-      }
+      },
+      "required": [
+        "provider",
+        "model",
+        "temperature",
+        "maxTokens"
+      ],
+      "additionalProperties": false
     },
     "platforms": {
-      "type": "object",
       "description": "Platform-specific configurations",
+      "type": "object",
       "properties": {
         "web": {
+          "description": "Web platform configuration",
           "type": "object",
-          "description": "Web platform default configuration",
           "properties": {
             "baseUrl": {
+              "description": "Base URL for the web application",
               "type": "string",
-              "format": "uri",
-              "description": "Default base URL for web tests",
-              "examples": ["https://example.com", "http://localhost:3000"]
+              "minLength": 1,
+              "format": "uri"
             },
             "browser": {
-              "type": "string",
-              "description": "Default browser to use",
-              "examples": ["chromium", "firefox", "webkit"],
-              "default": "chromium"
+              "description": "Browser to use for testing",
+              "type": "string"
             },
             "headless": {
-              "type": "boolean",
-              "description": "Run browser in headless mode by default",
-              "default": true
+              "description": "Run browser in headless mode",
+              "type": "boolean"
             },
             "timeout": {
+              "description": "Timeout in milliseconds for web actions",
               "type": "integer",
-              "minimum": 1,
-              "description": "Default timeout for web actions in milliseconds",
-              "examples": [30000]
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
             }
-          }
+          },
+          "additionalProperties": false
         },
         "android": {
+          "description": "Android platform configuration",
           "type": "object",
-          "description": "Android platform default configuration",
           "properties": {
             "appId": {
-              "type": "string",
-              "description": "Default Android application ID",
-              "examples": ["com.example.app"]
+              "description": "Android application ID",
+              "type": "string"
             },
             "device": {
-              "type": "string",
-              "description": "Default device name or ID",
-              "examples": ["Pixel_4_API_30", "emulator-5554"]
+              "description": "Device name or ID to run tests on",
+              "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "ios": {
+          "description": "iOS platform configuration",
           "type": "object",
-          "description": "iOS platform default configuration",
           "properties": {
             "bundleId": {
-              "type": "string",
-              "description": "Default iOS bundle identifier",
-              "examples": ["com.example.app"]
+              "description": "iOS bundle identifier",
+              "type": "string"
             },
             "simulator": {
-              "type": "string",
-              "description": "Default simulator name",
-              "examples": ["iPhone 14 Pro", "iPhone 15"]
+              "description": "Simulator name to run tests on",
+              "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "healing": {
-      "type": "object",
       "description": "Self-healing test configuration",
+      "type": "object",
       "properties": {
         "enabled": {
-          "type": "boolean",
           "description": "Enable self-healing capabilities",
-          "default": false
+          "type": "boolean"
         },
         "strategies": {
-          "type": "array",
           "description": "Healing strategies to use",
-          "items": {
-            "type": "string"
-          },
-          "examples": [["ai", "fallback", "retry"]]
-        }
-      }
-    },
-    "email": {
-      "type": "object",
-      "description": "Email testing configuration",
-      "required": ["provider"],
-      "properties": {
-        "provider": {
-          "type": "string",
-          "enum": ["inbucket"],
-          "description": "Email testing provider"
-        },
-        "endpoint": {
-          "type": "string",
-          "format": "uri",
-          "description": "Email service endpoint URL",
-          "examples": ["http://localhost:9000"]
-        }
-      }
-    },
-    "appwrite": {
-      "type": "object",
-      "description": "Appwrite backend configuration",
-      "required": ["endpoint", "projectId", "apiKey"],
-      "properties": {
-        "endpoint": {
-          "type": "string",
-          "format": "uri",
-          "description": "Appwrite API endpoint",
-          "examples": ["https://cloud.appwrite.io/v1", "${APPWRITE_ENDPOINT}"]
-        },
-        "projectId": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Appwrite project ID",
-          "examples": ["${APPWRITE_PROJECT_ID}"]
-        },
-        "apiKey": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Appwrite API key with appropriate permissions",
-          "examples": ["${APPWRITE_API_KEY}"]
-        },
-        "cleanup": {
-          "type": "boolean",
-          "description": "Enable automatic cleanup of Appwrite resources (backwards compatible)",
-          "default": true
-        },
-        "cleanupOnFailure": {
-          "type": "boolean",
-          "description": "Clean up Appwrite resources even when tests fail (backwards compatible)",
-          "default": true
-        }
-      }
-    },
-    "cleanup": {
-      "type": "object",
-      "description": "Comprehensive resource cleanup configuration",
-      "properties": {
-        "provider": {
-          "type": "string",
-          "description": "Primary cleanup provider to use",
-          "examples": ["appwrite", "postgres", "mysql", "sqlite"]
-        },
-        "parallel": {
-          "type": "boolean",
-          "description": "Execute cleanup operations in parallel",
-          "default": false
-        },
-        "retries": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 10,
-          "description": "Number of retry attempts for failed cleanup operations",
-          "default": 3
-        },
-        "types": {
-          "type": "object",
-          "description": "Map resource types to cleanup handler methods",
-          "additionalProperties": {
-            "type": "string"
-          },
-          "examples": [
-            {
-              "row": "appwrite.deleteRow",
-              "team": "appwrite.deleteTeam",
-              "user": "appwrite.deleteUser",
-              "stripe_customer": "stripe.deleteCustomer",
-              "stripe_subscription": "stripe.deleteSubscription"
-            }
-          ]
-        },
-        "handlers": {
           "type": "array",
-          "description": "Explicit paths to custom cleanup handler files",
           "items": {
             "type": "string"
-          },
-          "examples": [["./src/cleanup/stripe.ts", "./tests/cleanup/custom.ts"]]
-        },
-        "discover": {
-          "type": "object",
-          "description": "Auto-discovery configuration for cleanup handlers",
-          "properties": {
-            "enabled": {
-              "type": "boolean",
-              "description": "Enable auto-discovery of cleanup handlers in specified paths",
-              "default": true
-            },
-            "paths": {
-              "type": "array",
-              "description": "Directories to search for cleanup handler files",
-              "items": {
-                "type": "string"
-              },
-              "default": ["./tests/cleanup"]
-            },
-            "pattern": {
-              "type": "string",
-              "description": "Glob pattern to match handler files",
-              "default": "**/*.ts",
-              "examples": ["**/*.ts", "**/*.js", "**/cleanup.*.ts"]
-            }
           }
         }
-      }
+      },
+      "additionalProperties": false
+    },
+    "email": {
+      "description": "Email testing configuration",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "Email testing provider",
+          "type": "string",
+          "const": "inbucket"
+        },
+        "endpoint": {
+          "description": "Email service endpoint URL",
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        }
+      },
+      "required": [
+        "provider"
+      ],
+      "additionalProperties": false
+    },
+    "appwrite": {
+      "description": "Appwrite backend configuration",
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "description": "Appwrite API endpoint",
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
+        },
+        "projectId": {
+          "description": "Appwrite project ID",
+          "type": "string",
+          "minLength": 1
+        },
+        "apiKey": {
+          "description": "Appwrite API key with appropriate permissions",
+          "type": "string",
+          "minLength": 1
+        },
+        "cleanup": {
+          "description": "Enable automatic cleanup of created resources",
+          "type": "boolean"
+        },
+        "cleanupOnFailure": {
+          "description": "Clean up resources even when test fails",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "endpoint",
+        "projectId",
+        "apiKey"
+      ],
+      "additionalProperties": false
+    },
+    "cleanup": {
+      "description": "Comprehensive resource cleanup configuration",
+      "type": "object",
+      "properties": {
+        "provider": {
+          "description": "Primary cleanup provider to use",
+          "type": "string"
+        },
+        "parallel": {
+          "description": "Execute cleanup operations in parallel",
+          "default": false,
+          "type": "boolean"
+        },
+        "retries": {
+          "description": "Number of retry attempts for failed cleanup operations",
+          "default": 3,
+          "type": "number",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "types": {
+          "description": "Map resource types to cleanup handler methods",
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "handlers": {
+          "description": "Explicit paths to custom cleanup handler files",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "discover": {
+          "description": "Auto-discovery configuration for cleanup handlers",
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "description": "Enable auto-discovery of cleanup handlers in specified paths",
+              "default": true,
+              "type": "boolean"
+            },
+            "paths": {
+              "description": "Directories to search for cleanup handler files",
+              "default": [
+                "./tests/cleanup"
+              ],
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "pattern": {
+              "description": "Glob pattern to match handler files",
+              "default": "**/*.ts",
+              "type": "string"
+            }
+          },
+          "required": [
+            "enabled",
+            "paths",
+            "pattern"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "parallel",
+        "retries"
+      ],
+      "additionalProperties": {}
     },
     "webServer": {
       "type": "object",
-      "description": "Configuration for starting a web server before running tests",
-      "required": ["url"],
       "properties": {
         "command": {
-          "type": "string",
-          "minLength": 1,
           "description": "Command to start the web server",
-          "examples": [
-            "npm run dev",
-            "pnpm dev",
-            "yarn dev",
-            "bun dev",
-            "python -m http.server 8000"
-          ]
+          "type": "string",
+          "minLength": 1
         },
         "auto": {
-          "type": "boolean",
           "description": "Automatically detect and run the dev server from package.json",
-          "default": false
+          "type": "boolean"
         },
         "static": {
-          "type": "string",
           "description": "Serve a static directory instead of running a command",
-          "examples": ["./dist", "./build", "./public"]
+          "type": "string"
         },
         "url": {
-          "type": "string",
-          "format": "uri",
           "description": "URL to wait for before starting tests",
-          "examples": ["http://localhost:3000", "http://localhost:8080"]
+          "type": "string",
+          "minLength": 1,
+          "format": "uri"
         },
         "port": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 65535,
           "description": "Port number for the web server",
-          "examples": [3000, 8080, 5173]
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "reuseExistingServer": {
-          "type": "boolean",
           "description": "Use existing server if already running at the specified URL",
-          "default": true
+          "default": true,
+          "type": "boolean"
         },
         "timeout": {
-          "type": "integer",
-          "minimum": 1,
           "description": "Timeout in milliseconds to wait for server to become available",
-          "default": 30000
+          "default": 30000,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         },
         "cwd": {
-          "type": "string",
           "description": "Working directory for the server command",
-          "examples": ["./frontend", "./server"]
+          "type": "string"
         }
-      }
+      },
+      "required": [
+        "url",
+        "reuseExistingServer",
+        "timeout"
+      ],
+      "additionalProperties": false
     },
     "preview": {
-      "type": "object",
       "description": "Configuration for the --preview flag (build and serve production build)",
+      "type": "object",
       "properties": {
         "build": {
-          "type": "object",
           "description": "Build configuration",
+          "type": "object",
           "properties": {
             "command": {
-              "type": "string",
               "description": "Command to build the project",
-              "examples": ["pnpm build", "npm run build", "yarn build", "bun run build"]
+              "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "preview": {
-          "type": "object",
           "description": "Preview server configuration",
+          "type": "object",
           "properties": {
             "command": {
-              "type": "string",
               "description": "Command to start the preview server after build",
-              "examples": ["pnpm preview", "npm run preview", "serve ./dist", "npx serve build"]
+              "type": "string"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "url": {
-          "type": "string",
-          "format": "uri",
           "description": "URL to wait for before starting tests",
-          "examples": ["http://localhost:4321", "http://localhost:3000"]
+          "type": "string",
+          "format": "uri"
         },
         "timeout": {
-          "type": "integer",
-          "minimum": 1,
           "description": "Timeout in milliseconds to wait for preview server",
-          "default": 60000
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
         }
-      }
+      },
+      "additionalProperties": false
     },
     "secrets": {
+      "description": "Secret values that can be referenced in tests",
       "type": "object",
-      "description": "Secret values that can be referenced in tests (prefer environment variables)",
-      "additionalProperties": {
+      "propertyNames": {
         "type": "string"
       },
-      "examples": [
-        {
-          "API_KEY": "${API_KEY}",
-          "TEST_PASSWORD": "${TEST_PASSWORD}",
-          "STRIPE_KEY": "${STRIPE_SECRET_KEY}"
-        }
-      ]
+      "additionalProperties": {
+        "type": "string"
+      }
     }
-  }
+  },
+  "additionalProperties": false,
+  "title": "IntelliTester Configuration"
 }

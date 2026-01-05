@@ -1,517 +1,668 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "IntelliTester Test Definition",
-  "description": "Schema for IntelliTester test definition files (*.test.yaml)",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Schema for IntelliTester test definition files",
   "type": "object",
-  "required": ["name", "platform", "steps"],
   "properties": {
     "name": {
-      "type": "string",
-      "minLength": 1,
       "description": "The name of the test",
-      "examples": ["User Login Test", "Checkout Flow", "Sign Up Process"]
+      "type": "string",
+      "minLength": 1
     },
     "platform": {
-      "type": "string",
-      "enum": ["web", "android", "ios"],
       "description": "The platform to run the test on",
-      "default": "web"
-    },
-    "variables": {
-      "type": "object",
-      "description": "Variables that can be referenced in test steps using ${VARIABLE_NAME} syntax",
-      "additionalProperties": {
-        "type": "string"
-      },
-      "examples": [
-        {
-          "BASE_URL": "https://example.com",
-          "TEST_EMAIL": "test@example.com"
-        }
+      "type": "string",
+      "enum": [
+        "web",
+        "android",
+        "ios"
       ]
     },
-    "config": {
+    "variables": {
+      "description": "Variables that can be referenced in test steps using ${VARIABLE_NAME} syntax",
       "type": "object",
-      "description": "Test-specific configuration that overrides global settings",
-      "properties": {
-        "defaults": {
-          "type": "object",
-          "description": "Default settings for this test",
-          "properties": {
-            "timeout": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "Default timeout in milliseconds for actions",
-              "examples": [30000, 60000]
-            },
-            "screenshots": {
-              "type": "string",
-              "enum": ["on-failure", "always", "never"],
-              "description": "When to take screenshots during test execution",
-              "default": "on-failure"
-            }
-          }
-        },
-        "web": {
-          "type": "object",
-          "description": "Web platform configuration",
-          "properties": {
-            "baseUrl": {
-              "type": "string",
-              "format": "uri",
-              "description": "Base URL for the web application",
-              "examples": ["https://example.com", "http://localhost:3000"]
-            },
-            "browser": {
-              "type": "string",
-              "description": "Browser to use for testing",
-              "examples": ["chromium", "firefox", "webkit"]
-            },
-            "headless": {
-              "type": "boolean",
-              "description": "Run browser in headless mode",
-              "default": true
-            },
-            "timeout": {
-              "type": "integer",
-              "minimum": 1,
-              "description": "Timeout in milliseconds for web actions",
-              "examples": [30000]
-            }
-          }
-        },
-        "android": {
-          "type": "object",
-          "description": "Android platform configuration",
-          "properties": {
-            "appId": {
-              "type": "string",
-              "description": "Android application ID",
-              "examples": ["com.example.app"]
-            },
-            "device": {
-              "type": "string",
-              "description": "Device name or ID to run tests on",
-              "examples": ["Pixel_4_API_30"]
-            }
-          }
-        },
-        "ios": {
-          "type": "object",
-          "description": "iOS platform configuration",
-          "properties": {
-            "bundleId": {
-              "type": "string",
-              "description": "iOS bundle identifier",
-              "examples": ["com.example.app"]
-            },
-            "simulator": {
-              "type": "string",
-              "description": "Simulator name to run tests on",
-              "examples": ["iPhone 14 Pro"]
-            }
-          }
-        },
-        "email": {
-          "type": "object",
-          "description": "Email testing configuration",
-          "properties": {
-            "provider": {
-              "type": "string",
-              "enum": ["inbucket"],
-              "description": "Email testing provider"
-            },
-            "endpoint": {
-              "type": "string",
-              "format": "uri",
-              "description": "Email service endpoint URL",
-              "examples": ["http://localhost:9000"]
-            }
-          },
-          "required": ["provider"]
-        },
-        "appwrite": {
-          "type": "object",
-          "description": "Appwrite backend configuration",
-          "properties": {
-            "endpoint": {
-              "type": "string",
-              "format": "uri",
-              "description": "Appwrite API endpoint",
-              "examples": ["https://cloud.appwrite.io/v1"]
-            },
-            "projectId": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Appwrite project ID"
-            },
-            "apiKey": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Appwrite API key"
-            },
-            "cleanup": {
-              "type": "boolean",
-              "description": "Enable automatic cleanup of created resources",
-              "default": true
-            },
-            "cleanupOnFailure": {
-              "type": "boolean",
-              "description": "Clean up resources even when test fails",
-              "default": true
-            }
-          },
-          "required": ["endpoint", "projectId", "apiKey"]
-        }
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "string"
       }
     },
+    "config": {
+      "description": "Test-specific configuration that overrides global settings",
+      "type": "object",
+      "properties": {
+        "defaults": {
+          "description": "Default settings that apply to all tests unless overridden",
+          "type": "object",
+          "properties": {
+            "timeout": {
+              "description": "Default timeout in milliseconds for all actions",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "screenshots": {
+              "description": "When to capture screenshots during test execution",
+              "type": "string",
+              "enum": [
+                "on-failure",
+                "always",
+                "never"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "web": {
+          "description": "Web platform configuration",
+          "type": "object",
+          "properties": {
+            "baseUrl": {
+              "description": "Base URL for the web application",
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "browser": {
+              "description": "Browser to use for testing",
+              "type": "string"
+            },
+            "headless": {
+              "description": "Run browser in headless mode",
+              "type": "boolean"
+            },
+            "timeout": {
+              "description": "Timeout in milliseconds for web actions",
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "additionalProperties": false
+        },
+        "android": {
+          "description": "Android platform configuration",
+          "type": "object",
+          "properties": {
+            "appId": {
+              "description": "Android application ID",
+              "type": "string"
+            },
+            "device": {
+              "description": "Device name or ID to run tests on",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "ios": {
+          "description": "iOS platform configuration",
+          "type": "object",
+          "properties": {
+            "bundleId": {
+              "description": "iOS bundle identifier",
+              "type": "string"
+            },
+            "simulator": {
+              "description": "Simulator name to run tests on",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "email": {
+          "description": "Email testing configuration",
+          "type": "object",
+          "properties": {
+            "provider": {
+              "description": "Email testing provider",
+              "type": "string",
+              "const": "inbucket"
+            },
+            "endpoint": {
+              "description": "Email service endpoint URL",
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            }
+          },
+          "required": [
+            "provider"
+          ],
+          "additionalProperties": false
+        },
+        "appwrite": {
+          "description": "Appwrite backend configuration",
+          "type": "object",
+          "properties": {
+            "endpoint": {
+              "description": "Appwrite API endpoint",
+              "type": "string",
+              "minLength": 1,
+              "format": "uri"
+            },
+            "projectId": {
+              "description": "Appwrite project ID",
+              "type": "string",
+              "minLength": 1
+            },
+            "apiKey": {
+              "description": "Appwrite API key with appropriate permissions",
+              "type": "string",
+              "minLength": 1
+            },
+            "cleanup": {
+              "description": "Enable automatic cleanup of created resources",
+              "type": "boolean"
+            },
+            "cleanupOnFailure": {
+              "description": "Clean up resources even when test fails",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "endpoint",
+            "projectId",
+            "apiKey"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "steps": {
-      "type": "array",
       "description": "The sequence of actions to execute in this test",
       "minItems": 1,
+      "type": "array",
       "items": {
         "oneOf": [
           {
-            "type": "object",
             "description": "Navigate to a URL",
-            "required": ["type", "value"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "navigate"
               },
               "value": {
-                "type": "string",
-                "minLength": 1,
                 "description": "URL or path to navigate to",
-                "examples": ["/login", "https://example.com/signup"]
+                "type": "string",
+                "minLength": 1
               }
             },
+            "required": [
+              "type",
+              "value"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Click or tap on an element",
-            "required": ["type", "target"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "tap"
               },
               "target": {
-                "$ref": "#/definitions/locator"
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "description": "AI-friendly description of the element to find",
+                    "type": "string"
+                  },
+                  "testId": {
+                    "description": "data-testid attribute value",
+                    "type": "string"
+                  },
+                  "text": {
+                    "description": "Visible text content",
+                    "type": "string"
+                  },
+                  "css": {
+                    "description": "CSS selector",
+                    "type": "string"
+                  },
+                  "xpath": {
+                    "description": "XPath selector",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "ARIA role",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Accessible name",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
               }
             },
+            "required": [
+              "type",
+              "target"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Input text into a field",
-            "required": ["type", "target", "value"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "input"
               },
               "target": {
-                "$ref": "#/definitions/locator"
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "description": "AI-friendly description of the element to find",
+                    "type": "string"
+                  },
+                  "testId": {
+                    "description": "data-testid attribute value",
+                    "type": "string"
+                  },
+                  "text": {
+                    "description": "Visible text content",
+                    "type": "string"
+                  },
+                  "css": {
+                    "description": "CSS selector",
+                    "type": "string"
+                  },
+                  "xpath": {
+                    "description": "XPath selector",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "ARIA role",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Accessible name",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
               },
               "value": {
-                "type": "string",
                 "description": "Text to input (can reference variables with ${VAR_NAME})",
-                "examples": ["user@example.com", "${TEST_EMAIL}", "${PASSWORD}"]
+                "type": "string"
               }
             },
+            "required": [
+              "type",
+              "target",
+              "value"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Assert that an element exists or contains expected text",
-            "required": ["type", "target"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "assert"
               },
               "target": {
-                "$ref": "#/definitions/locator"
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "description": "AI-friendly description of the element to find",
+                    "type": "string"
+                  },
+                  "testId": {
+                    "description": "data-testid attribute value",
+                    "type": "string"
+                  },
+                  "text": {
+                    "description": "Visible text content",
+                    "type": "string"
+                  },
+                  "css": {
+                    "description": "CSS selector",
+                    "type": "string"
+                  },
+                  "xpath": {
+                    "description": "XPath selector",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "ARIA role",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Accessible name",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
               },
               "value": {
-                "type": "string",
-                "description": "Expected text content (optional)",
-                "examples": ["Welcome", "Login successful"]
+                "description": "Expected text content",
+                "type": "string"
               }
             },
+            "required": [
+              "type",
+              "target"
+            ],
             "additionalProperties": false
           },
           {
             "type": "object",
-            "description": "Wait for an element or timeout",
-            "required": ["type"],
             "properties": {
               "type": {
                 "type": "string",
                 "const": "wait"
               },
               "target": {
-                "$ref": "#/definitions/locator",
-                "description": "Element to wait for (optional if timeout is specified)"
+                "description": "Element to wait for",
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "description": "AI-friendly description of the element to find",
+                    "type": "string"
+                  },
+                  "testId": {
+                    "description": "data-testid attribute value",
+                    "type": "string"
+                  },
+                  "text": {
+                    "description": "Visible text content",
+                    "type": "string"
+                  },
+                  "css": {
+                    "description": "CSS selector",
+                    "type": "string"
+                  },
+                  "xpath": {
+                    "description": "XPath selector",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "ARIA role",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Accessible name",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
               },
               "timeout": {
-                "type": "integer",
-                "minimum": 1,
                 "description": "Time to wait in milliseconds",
-                "examples": [1000, 5000]
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
               }
             },
+            "required": [
+              "type"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Scroll the page or an element",
-            "required": ["type"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "scroll"
               },
               "target": {
-                "$ref": "#/definitions/locator",
-                "description": "Element to scroll (optional, defaults to page)"
+                "description": "Element to scroll",
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "description": "AI-friendly description of the element to find",
+                    "type": "string"
+                  },
+                  "testId": {
+                    "description": "data-testid attribute value",
+                    "type": "string"
+                  },
+                  "text": {
+                    "description": "Visible text content",
+                    "type": "string"
+                  },
+                  "css": {
+                    "description": "CSS selector",
+                    "type": "string"
+                  },
+                  "xpath": {
+                    "description": "XPath selector",
+                    "type": "string"
+                  },
+                  "role": {
+                    "description": "ARIA role",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Accessible name",
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
               },
               "direction": {
-                "type": "string",
-                "enum": ["up", "down"],
                 "description": "Direction to scroll",
-                "default": "down"
+                "type": "string",
+                "enum": [
+                  "up",
+                  "down"
+                ]
               },
               "amount": {
-                "type": "integer",
-                "minimum": 1,
                 "description": "Amount to scroll in pixels",
-                "examples": [100, 500]
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
               }
             },
+            "required": [
+              "type"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Take a screenshot",
-            "required": ["type"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "screenshot"
               },
               "name": {
-                "type": "string",
                 "description": "Name for the screenshot file",
-                "examples": ["after-login", "checkout-page"]
+                "type": "string"
               }
             },
+            "required": [
+              "type"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Set a variable for use in later steps",
-            "required": ["type", "name"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "setVar"
               },
               "name": {
-                "type": "string",
-                "minLength": 1,
                 "description": "Variable name to set",
-                "examples": ["USER_ID", "AUTH_TOKEN"]
+                "type": "string",
+                "minLength": 1
               },
               "value": {
-                "type": "string",
-                "description": "Static value to set (optional if from/path is used)",
-                "examples": ["static-value"]
+                "description": "Static value to set",
+                "type": "string"
               },
               "from": {
+                "description": "Extract value from a source",
                 "type": "string",
-                "enum": ["response", "element", "email"],
-                "description": "Extract value from a source"
+                "enum": [
+                  "response",
+                  "element",
+                  "email"
+                ]
               },
               "path": {
-                "type": "string",
                 "description": "JSON path or selector for extraction",
-                "examples": ["$.data.userId", "data-user-id"]
+                "type": "string"
               },
               "pattern": {
-                "type": "string",
                 "description": "Regular expression pattern for extraction",
-                "examples": ["\\d{6}", "user-([a-z0-9]+)"]
+                "type": "string"
               }
             },
+            "required": [
+              "type",
+              "name"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Wait for an email to arrive",
-            "required": ["type", "mailbox"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "email.waitFor"
               },
               "mailbox": {
-                "type": "string",
-                "minLength": 1,
                 "description": "Email address or mailbox to check",
-                "examples": ["test@example.com"]
+                "type": "string",
+                "minLength": 1
               },
               "timeout": {
-                "type": "integer",
-                "minimum": 1,
                 "description": "How long to wait for email in milliseconds",
-                "examples": [30000]
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
               },
               "subjectContains": {
-                "type": "string",
                 "description": "Filter by email subject",
-                "examples": ["Verification", "Welcome"]
+                "type": "string"
               }
             },
+            "required": [
+              "type",
+              "mailbox"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Extract a verification code from email",
-            "required": ["type", "saveTo"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "email.extractCode"
               },
               "saveTo": {
-                "type": "string",
-                "minLength": 1,
                 "description": "Variable name to save the extracted code",
-                "examples": ["VERIFICATION_CODE"]
+                "type": "string",
+                "minLength": 1
               },
               "pattern": {
-                "type": "string",
                 "description": "Regular expression to extract code",
-                "examples": ["\\d{6}", "code:\\s*(\\w+)"]
+                "type": "string"
               }
             },
+            "required": [
+              "type",
+              "saveTo"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Extract a link from email",
-            "required": ["type", "saveTo"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "email.extractLink"
               },
               "saveTo": {
-                "type": "string",
-                "minLength": 1,
                 "description": "Variable name to save the extracted link",
-                "examples": ["VERIFY_URL"]
+                "type": "string",
+                "minLength": 1
               },
               "pattern": {
-                "type": "string",
                 "description": "Regular expression to match specific links",
-                "examples": ["verify.*"]
+                "type": "string"
               }
             },
+            "required": [
+              "type",
+              "saveTo"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Clear emails from a mailbox",
-            "required": ["type", "mailbox"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "email.clear"
               },
               "mailbox": {
-                "type": "string",
-                "minLength": 1,
                 "description": "Email address or mailbox to clear",
-                "examples": ["test@example.com"]
+                "type": "string",
+                "minLength": 1
               }
             },
+            "required": [
+              "type",
+              "mailbox"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Verify email using Appwrite",
-            "required": ["type"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "appwrite.verifyEmail"
               }
             },
+            "required": [
+              "type"
+            ],
             "additionalProperties": false
           },
           {
-            "type": "object",
             "description": "Pause execution and open Playwright Inspector for debugging",
-            "required": ["type"],
+            "type": "object",
             "properties": {
               "type": {
                 "type": "string",
                 "const": "debug"
               }
             },
+            "required": [
+              "type"
+            ],
             "additionalProperties": false
           }
         ]
       }
     }
   },
-  "definitions": {
-    "locator": {
-      "type": "object",
-      "description": "Defines how to locate an element on the page. At least one selector must be provided.",
-      "properties": {
-        "description": {
-          "type": "string",
-          "description": "AI-friendly description of the element to find (e.g., 'the login button', 'email input field')"
-        },
-        "testId": {
-          "type": "string",
-          "description": "data-testid attribute value",
-          "examples": ["login-button", "email-input"]
-        },
-        "text": {
-          "type": "string",
-          "description": "Visible text content",
-          "examples": ["Sign In", "Submit"]
-        },
-        "css": {
-          "type": "string",
-          "description": "CSS selector",
-          "examples": [".btn-primary", "#submit-button"]
-        },
-        "xpath": {
-          "type": "string",
-          "description": "XPath selector",
-          "examples": ["//button[@type='submit']"]
-        },
-        "role": {
-          "type": "string",
-          "description": "ARIA role",
-          "examples": ["button", "textbox", "link"]
-        },
-        "name": {
-          "type": "string",
-          "description": "Accessible name",
-          "examples": ["Email", "Password"]
-        }
-      },
-      "additionalProperties": false,
-      "minProperties": 1
-    }
-  }
+  "required": [
+    "name",
+    "platform",
+    "steps"
+  ],
+  "additionalProperties": false,
+  "title": "IntelliTester Test Definition"
 }

@@ -601,6 +601,20 @@ export async function runWorkflowWithContext(
     setupAppwriteTracking(page, executionContext);
   }
 
+  // Load workflow-level variables (only if not already set by parent pipeline)
+  if (workflow.variables) {
+    for (const [key, value] of Object.entries(workflow.variables)) {
+      // Don't overwrite variables already set by pipeline
+      if (!executionContext.variables.has(key)) {
+        const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
+          if (varName === 'uuid') return crypto.randomUUID().split('-')[0];
+          return executionContext.variables.get(varName) ?? match;
+        });
+        executionContext.variables.set(key, interpolated);
+      }
+    }
+  }
+
   // Run tests in sequence
   const testResults: WorkflowTestResult[] = [];
   let workflowFailed = false;
@@ -892,6 +906,18 @@ export async function runWorkflow(
         }
       : undefined,
   };
+
+  // 5b. Load workflow-level variables into execution context
+  if (workflow.variables) {
+    for (const [key, value] of Object.entries(workflow.variables)) {
+      // Interpolate special values like {{uuid}}
+      const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
+        if (varName === 'uuid') return crypto.randomUUID().split('-')[0];
+        return executionContext.variables.get(varName) ?? match;
+      });
+      executionContext.variables.set(key, interpolated);
+    }
+  }
 
   try {
     // 6. Run workflow with context (skipCleanup=true so we can collect tracking resources first)

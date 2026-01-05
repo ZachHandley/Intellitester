@@ -63,6 +63,7 @@ const workflowConfigSchema = z.object({
 export const WorkflowDefinitionSchema = z.object({
   name: nonEmptyString.describe('The name of the workflow'),
   platform: z.enum(['web', 'android', 'ios']).default('web').describe('The platform to run the workflow on'),
+  variables: z.record(z.string(), z.string()).optional().describe('Workflow-level variables available to all tests'),
   config: workflowConfigSchema.optional(),
   continueOnFailure: z.boolean().default(false).describe('Continue running subsequent tests even if a test fails'),
   tests: z.array(testReferenceSchema).min(1, 'Workflow must contain at least one test').describe('List of test files to execute in this workflow'),

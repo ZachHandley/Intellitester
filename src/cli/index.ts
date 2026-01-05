@@ -870,9 +870,13 @@ const main = async (): Promise<void> => {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logError(message);
-        process.exitCode = 1;
-      } finally {
         // Cleanup preview server if running
+        if (previewCleanup) {
+          previewCleanup();
+        }
+        process.exit(1);
+      } finally {
+        // Cleanup preview server if running (for normal exit)
         if (previewCleanup) {
           previewCleanup();
         }

@@ -54,6 +54,7 @@ runs:
     - name: Install package manager
       shell: bash
       run: |
+        set -e
         if [ "${{ inputs.package-manager }}" = "pnpm" ]; then
           npm install -g pnpm@latest
         elif [ "${{ inputs.package-manager }}" = "yarn" ]; then
@@ -66,25 +67,24 @@ runs:
       if: inputs.npm-registry != ''
       shell: bash
       run: |
+        set -e
         REGISTRY="${{ inputs.npm-registry }}"
-        # Extract scope from registry URL if it's a scoped registry
         if [[ "$REGISTRY" == *"/npm/"* ]]; then
-          # Forgejo/Gitea style: extract org name
           ORG=$(echo "$REGISTRY" | sed -n 's|.*/packages/\([^/]*\)/npm/.*|\1|p')
           if [ -n "$ORG" ]; then
             echo "@${ORG}:registry=${REGISTRY}" >> ~/.npmrc
           fi
         fi
-        # Add auth token
         if [ -n "${{ inputs.npm-token }}" ]; then
-          # Extract host from URL
           HOST=$(echo "$REGISTRY" | sed 's|https\?://||' | sed 's|/$||')
           echo "//${HOST}:_authToken=${{ inputs.npm-token }}" >> ~/.npmrc
         fi
 
     - name: Install Intellitester
       shell: bash
-      run: npm install -g intellitester
+      run: |
+        set -e
+        npm install -g intellitester
 
     - name: Create .env file
       if: inputs.env-file != ''
@@ -98,17 +98,22 @@ runs:
     - name: Install dependencies
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: ${{ inputs.package-manager }} install
+      run: |
+        set -e
+        ${{ inputs.package-manager }} install
 
     - name: Install Playwright browsers
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: npx playwright install --with-deps ${{ inputs.playwright-browsers }}
+      run: |
+        set -e
+        npx playwright install --with-deps ${{ inputs.playwright-browsers }}
 
     - name: Run Intellitester
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
+        set -e
         ARGS=""
         if [ -n "${{ inputs.test-file }}" ]; then
           ARGS="${{ inputs.test-file }}"
@@ -120,9 +125,3 @@ runs:
 
         echo "Running: intellitester run $ARGS"
         intellitester run $ARGS
-        EXIT_CODE=$?
-
-        if [ $EXIT_CODE -ne 0 ]; then
-          echo "::error::Intellitester tests failed with exit code $EXIT_CODE"
-          exit $EXIT_CODE
-        fi

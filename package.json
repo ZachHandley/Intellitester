@@ -94,10 +94,12 @@
     "glob": "^13.0.0",
     "llamaindex": "^0.12.1",
     "node-appwrite": "^21.0.0",
-    "playwright": "^1.57.0",
     "prompts": "^2.4.2",
     "yaml": "^2.8.2",
     "zod": "^4.1.13"
+  },
+  "peerDependencies": {
+    "playwright": "*"
   },
   "devDependencies": {
     "@types/node": "^25.0.2",

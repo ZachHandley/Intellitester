@@ -123,7 +123,8 @@ async function runTestInWorkflow(
   page: Page,
   context: ExecutionContext,
   options: WorkflowOptions,
-  _workflowDir: string
+  _workflowDir: string,
+  workflowBaseUrl?: string
 ): Promise<{ status: 'passed' | 'failed'; steps: StepResult[] }> {
   const results: StepResult[] = [];
   const debugMode = options.debug ?? false;
@@ -176,7 +177,8 @@ async function runTestInWorkflow(
         switch (action.type) {
           case 'navigate': {
             const interpolated = interpolateVariables(action.value);
-            const target = resolveUrl(interpolated, test.config?.web?.baseUrl);
+            const baseUrl = test.config?.web?.baseUrl ?? workflowBaseUrl;
+            const target = resolveUrl(interpolated, baseUrl);
             if (debugMode) console.log(`  [DEBUG] Navigating to: ${target}`);
             await page.goto(target);
             break;
@@ -649,7 +651,7 @@ export async function runWorkflowWithContext(
       }
 
       // Run test with shared browser context
-      const result = await runTestInWorkflow(test, page, executionContext, options, workflowDir);
+      const result = await runTestInWorkflow(test, page, executionContext, options, workflowDir, workflow.config?.web?.baseUrl);
 
       const testResult: WorkflowTestResult = {
         id: testRef.id,

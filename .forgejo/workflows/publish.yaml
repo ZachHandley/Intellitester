@@ -90,17 +90,26 @@ jobs:
       - name: Update version in package.json
         run: |
           VERSION="${{ needs.version.outputs.tag }}"
-          # Update root package.json
-          pnpm version ${VERSION} --no-git-tag-version
+          CURRENT_VERSION=$(node -p "require('./package.json').version")
+          # Update root package.json (skip if already matches)
+          if [ "$CURRENT_VERSION" != "$VERSION" ]; then
+            pnpm version ${VERSION} --no-git-tag-version
+          fi
           # Update workspace packages if they exist
           if [ -d "packages/astro-integration" ]; then
             cd packages/astro-integration
-            pnpm version ${VERSION} --no-git-tag-version
+            PKG_VERSION=$(node -p "require('./package.json').version")
+            if [ "$PKG_VERSION" != "$VERSION" ]; then
+              pnpm version ${VERSION} --no-git-tag-version
+            fi
             cd ../..
           fi
           if [ -d "packages/vite-plugin-autotester" ]; then
             cd packages/vite-plugin-autotester
-            pnpm version ${VERSION} --no-git-tag-version
+            PKG_VERSION=$(node -p "require('./package.json').version")
+            if [ "$PKG_VERSION" != "$VERSION" ]; then
+              pnpm version ${VERSION} --no-git-tag-version
+            fi
             cd ../..
           fi
 

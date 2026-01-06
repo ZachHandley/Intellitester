@@ -40,3 +40,12 @@ export {
   parseTestDefinition,
   parseWorkflowDefinition,
 } from './loader';
+
+// Export interpolation utilities
+export {
+  interpolateVariables,
+  generateRandomUsername,
+  generateRandomPhoto,
+  generateFillerText,
+  generateRandomEmail,
+} from './interpolation';

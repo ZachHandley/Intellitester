@@ -14,7 +14,7 @@ import {
 import prompts from 'prompts';
 
 import type { Action, Locator, TestDefinition } from '../../core/types';
-import { generateRandomUsername } from '../../core/randomUsername';
+import { interpolateVariables } from '../../core/interpolation';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import { AppwriteTestClient, createTestContext, APPWRITE_PATTERNS, APPWRITE_UPDATE_PATTERNS, APPWRITE_DELETE_PATTERNS, type TrackedResource } from '../../integrations/appwrite';
@@ -78,18 +78,6 @@ interface ExecutionContext {
 }
 
 const defaultScreenshotDir = path.join(process.cwd(), 'artifacts', 'screenshots');
-
-function interpolateVariables(value: string, variables: Map<string, string>): string {
-  return value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
-    if (varName === 'uuid') {
-      return crypto.randomUUID().split('-')[0]; // Short UUID
-    }
-    if (varName === 'randomUsername') {
-      return generateRandomUsername(); // e.g., "HappyTiger42"
-    }
-    return variables.get(varName) ?? match;
-  });
-}
 
 const resolveUrl = (value: string, baseUrl?: string): string => {
   if (!baseUrl) return value;

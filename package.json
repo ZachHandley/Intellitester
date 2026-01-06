@@ -93,6 +93,7 @@
     "commander": "^14.0.2",
     "dotenv": "^17.2.3",
     "glob": "^13.0.0",
+    "libphonenumber-js": "^1.12.33",
     "llamaindex": "^0.12.1",
     "node-appwrite": "^21.0.0",
     "prompts": "^2.4.2",

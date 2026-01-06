@@ -11,7 +11,7 @@ import {
 } from 'playwright';
 
 import type { Action, TestDefinition, WorkflowDefinition } from '../../core/types';
-import { generateRandomUsername } from '../../core/randomUsername';
+import { interpolateVariables } from '../../core/interpolation';
 import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
@@ -97,7 +97,7 @@ function interpolateWorkflowVariables(
 ): string {
   return value.replace(/\{\{([^}]+)\}\}/g, (match, path) => {
     // Handle {{testId.varName}} syntax
-    if (path.includes('.')) {
+    if (path.includes('.') && !path.includes(':')) {
       const [testId, _varName] = path.split('.', 2);
       const _testResult = testResults.find((t) => t.id === testId);
 
@@ -109,14 +109,9 @@ function interpolateWorkflowVariables(
       return match;
     }
 
-    // Handle {{varName}} syntax from current test variables
-    if (path === 'uuid') {
-      return crypto.randomUUID().split('-')[0]; // Short UUID
-    }
-    if (path === 'randomUsername') {
-      return generateRandomUsername(); // e.g., "HappyTiger42"
-    }
-    return currentVariables.get(path) ?? match;
+    // Use the centralized interpolation for built-in variables
+    const result = interpolateVariables(`{{${path}}}`, currentVariables);
+    return result;
   });
 }
 
@@ -149,16 +144,9 @@ async function runTestInWorkflow(
     }
   };
 
-  const interpolateVariables = (value: string): string => {
-    return value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
-      if (varName === 'uuid') {
-        return crypto.randomUUID().split('-')[0];
-      }
-      if (varName === 'randomUsername') {
-        return generateRandomUsername(); // e.g., "HappyTiger42"
-      }
-      return context.variables.get(varName) ?? match;
-    });
+  // Use the centralized interpolation function with context variables
+  const interpolate = (value: string): string => {
+    return interpolateVariables(value, context.variables);
   };
 
   const resolveLocator = (locator: any) => {
@@ -184,7 +172,7 @@ async function runTestInWorkflow(
       try {
         switch (action.type) {
           case 'navigate': {
-            const interpolated = interpolateVariables(action.value);
+            const interpolated = interpolate(action.value);
             const baseUrl = test.config?.web?.baseUrl ?? workflowBaseUrl;
             const target = resolveUrl(interpolated, baseUrl);
             if (debugMode) console.log(`  [DEBUG] Navigating to: ${target}`);
@@ -198,7 +186,7 @@ async function runTestInWorkflow(
             break;
           }
           case 'input': {
-            const interpolated = interpolateVariables(action.value);
+            const interpolated = interpolate(action.value);
             if (debugMode) console.log(`  [DEBUG] Input: ${interpolated}`);
             const handle = resolveLocator(action.target);
             await handle.fill(interpolated);
@@ -217,7 +205,7 @@ async function runTestInWorkflow(
             break;
           }
           case 'select': {
-            const interpolated = interpolateVariables(action.value);
+            const interpolated = interpolate(action.value);
             if (debugMode) console.log(`  [DEBUG] Selecting: ${interpolated}`);
             const handle = resolveLocator(action.target);
             await handle.selectOption(interpolated);
@@ -256,7 +244,7 @@ async function runTestInWorkflow(
             const handle = resolveLocator(action.target);
             await handle.waitFor({ state: 'visible' });
             if (action.value) {
-              const interpolated = interpolateVariables(action.value);
+              const interpolated = interpolate(action.value);
               const text = (await handle.textContent())?.trim() ?? '';
               if (!text.includes(interpolated)) {
                 throw new Error(
@@ -297,7 +285,7 @@ async function runTestInWorkflow(
           case 'setVar': {
             let value: string;
             if (action.value) {
-              value = interpolateVariables(action.value);
+              value = interpolate(action.value);
             } else if (action.from === 'response') {
               throw new Error('setVar from response not yet implemented');
             } else if (action.from === 'element') {
@@ -315,7 +303,7 @@ async function runTestInWorkflow(
             if (!context.emailClient) {
               throw new Error('Email client not configured');
             }
-            const mailbox = interpolateVariables(action.mailbox);
+            const mailbox = interpolate(action.mailbox);
             context.lastEmail = await context.emailClient.waitForEmail(mailbox, {
               timeout: action.timeout,
               subjectContains: action.subjectContains,
@@ -360,7 +348,7 @@ async function runTestInWorkflow(
             if (!context.emailClient) {
               throw new Error('Email client not configured');
             }
-            const mailbox = interpolateVariables(action.mailbox);
+            const mailbox = interpolate(action.mailbox);
             await context.emailClient.clearMailbox(mailbox);
             break;
           }
@@ -661,11 +649,7 @@ export async function runWorkflowWithContext(
     for (const [key, value] of Object.entries(workflow.variables)) {
       // Don't overwrite variables already set by pipeline
       if (!executionContext.variables.has(key)) {
-        const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
-          if (varName === 'uuid') return crypto.randomUUID().split('-')[0];
-          if (varName === 'randomUsername') return generateRandomUsername();
-          return executionContext.variables.get(varName) ?? match;
-        });
+        const interpolated = interpolateVariables(value, executionContext.variables);
         executionContext.variables.set(key, interpolated);
       }
     }
@@ -709,16 +693,8 @@ export async function runWorkflowWithContext(
       // Initialize test variables in execution context
       if (test.variables) {
         for (const [key, value] of Object.entries(test.variables)) {
-          // Interpolate {{uuid}}, {{randomUsername}} and other built-in variables
-          const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
-            if (varName === 'uuid') {
-              return crypto.randomUUID().split('-')[0];
-            }
-            if (varName === 'randomUsername') {
-              return generateRandomUsername();
-            }
-            return executionContext.variables.get(varName) ?? match;
-          });
+          // Use centralized interpolation for all built-in variables
+          const interpolated = interpolateVariables(value, executionContext.variables);
           executionContext.variables.set(key, interpolated);
         }
       }
@@ -972,12 +948,8 @@ export async function runWorkflow(
   // 5b. Load workflow-level variables into execution context
   if (workflow.variables) {
     for (const [key, value] of Object.entries(workflow.variables)) {
-      // Interpolate special values like {{uuid}} and {{randomUsername}}
-      const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
-        if (varName === 'uuid') return crypto.randomUUID().split('-')[0];
-        if (varName === 'randomUsername') return generateRandomUsername();
-        return executionContext.variables.get(varName) ?? match;
-      });
+      // Use centralized interpolation for all built-in variables
+      const interpolated = interpolateVariables(value, executionContext.variables);
       executionContext.variables.set(key, interpolated);
     }
   }

@@ -43,6 +43,43 @@ const inputActionSchema = z.object({
   value: z.string().describe('Text to input (can reference variables with ${VAR_NAME})'),
 }).describe('Input text into a field');
 
+const clearActionSchema = z.object({
+  type: z.literal('clear'),
+  target: LocatorSchema,
+}).describe('Clear the contents of an input field');
+
+const hoverActionSchema = z.object({
+  type: z.literal('hover'),
+  target: LocatorSchema,
+}).describe('Hover over an element');
+
+const selectActionSchema = z.object({
+  type: z.literal('select'),
+  target: LocatorSchema,
+  value: z.string().describe('Option value, label, or index to select'),
+}).describe('Select an option from a dropdown');
+
+const checkActionSchema = z.object({
+  type: z.literal('check'),
+  target: LocatorSchema,
+}).describe('Check a checkbox');
+
+const uncheckActionSchema = z.object({
+  type: z.literal('uncheck'),
+  target: LocatorSchema,
+}).describe('Uncheck a checkbox');
+
+const pressActionSchema = z.object({
+  type: z.literal('press'),
+  key: nonEmptyString.describe('Key to press (e.g., Enter, Tab, Escape, ArrowDown)'),
+  target: LocatorSchema.optional().describe('Element to focus before pressing key'),
+}).describe('Press a keyboard key');
+
+const focusActionSchema = z.object({
+  type: z.literal('focus'),
+  target: LocatorSchema,
+}).describe('Focus an element');
+
 const assertActionSchema = z.object({
   type: z.literal('assert'),
   target: LocatorSchema,
@@ -117,6 +154,13 @@ export const ActionSchema = z.discriminatedUnion('type', [
   navigateActionSchema,
   tapActionSchema,
   inputActionSchema,
+  clearActionSchema,
+  hoverActionSchema,
+  selectActionSchema,
+  checkActionSchema,
+  uncheckActionSchema,
+  pressActionSchema,
+  focusActionSchema,
   assertActionSchema,
   waitActionSchema,
   scrollActionSchema,

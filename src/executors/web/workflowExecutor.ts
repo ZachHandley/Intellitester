@@ -197,6 +197,53 @@ async function runTestInWorkflow(
             await handle.fill(interpolated);
             break;
           }
+          case 'clear': {
+            if (debugMode) console.log(`  [DEBUG] Clearing element:`, action.target);
+            const handle = resolveLocator(action.target);
+            await handle.clear();
+            break;
+          }
+          case 'hover': {
+            if (debugMode) console.log(`  [DEBUG] Hovering element:`, action.target);
+            const handle = resolveLocator(action.target);
+            await handle.hover();
+            break;
+          }
+          case 'select': {
+            const interpolated = interpolateVariables(action.value);
+            if (debugMode) console.log(`  [DEBUG] Selecting: ${interpolated}`);
+            const handle = resolveLocator(action.target);
+            await handle.selectOption(interpolated);
+            break;
+          }
+          case 'check': {
+            if (debugMode) console.log(`  [DEBUG] Checking:`, action.target);
+            const handle = resolveLocator(action.target);
+            await handle.check();
+            break;
+          }
+          case 'uncheck': {
+            if (debugMode) console.log(`  [DEBUG] Unchecking:`, action.target);
+            const handle = resolveLocator(action.target);
+            await handle.uncheck();
+            break;
+          }
+          case 'press': {
+            if (debugMode) console.log(`  [DEBUG] Pressing key: ${action.key}`);
+            if (action.target) {
+              const handle = resolveLocator(action.target);
+              await handle.press(action.key);
+            } else {
+              await page.keyboard.press(action.key);
+            }
+            break;
+          }
+          case 'focus': {
+            if (debugMode) console.log(`  [DEBUG] Focusing:`, action.target);
+            const handle = resolveLocator(action.target);
+            await handle.focus();
+            break;
+          }
           case 'assert': {
             if (debugMode) console.log(`  [DEBUG] Assert:`, action.target);
             const handle = resolveLocator(action.target);

@@ -58,6 +58,12 @@ function formatActionName(step: StepResult, index: number): string {
       return `step-${index + 1}: press ${action.key}`;
     case 'focus':
       return `step-${index + 1}: focus`;
+    case 'waitForSelector':
+      return `step-${index + 1}: wait for ${action.state}`;
+    case 'conditional':
+      return `step-${index + 1}: conditional ${action.condition.type}`;
+    case 'fail':
+      return `step-${index + 1}: fail`;
     default: {
       const _exhaustiveCheck: never = action;
       return `step-${index + 1}: unknown action`;

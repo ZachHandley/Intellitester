@@ -150,7 +150,22 @@ const debugActionSchema = z.object({
   type: z.literal('debug'),
 }).describe('Pause execution and open Playwright Inspector for debugging');
 
-export const ActionSchema = z.discriminatedUnion('type', [
+const waitForSelectorActionSchema = z.object({
+  type: z.literal('waitForSelector'),
+  target: LocatorSchema,
+  state: z.enum(['enabled', 'disabled', 'visible', 'hidden', 'attached', 'detached'])
+    .describe('Element state to wait for'),
+  timeout: z.number().int().positive().optional()
+    .describe('Time to wait in milliseconds'),
+}).describe('Wait for an element to reach a specific state');
+
+const failActionSchema = z.object({
+  type: z.literal('fail'),
+  message: nonEmptyString.describe('Error message to display when test fails'),
+}).describe('Explicitly fail the test with a custom message');
+
+// Base action schema without conditional (used for nested steps in conditional)
+const BaseActionSchema = z.discriminatedUnion('type', [
   navigateActionSchema,
   tapActionSchema,
   inputActionSchema,
@@ -172,7 +187,21 @@ export const ActionSchema = z.discriminatedUnion('type', [
   emailClearActionSchema,
   appwriteVerifyEmailActionSchema,
   debugActionSchema,
+  waitForSelectorActionSchema,
+  failActionSchema,
 ]);
+
+const conditionalActionSchema = z.object({
+  type: z.literal('conditional'),
+  condition: z.object({
+    type: z.enum(['exists', 'notExists', 'visible', 'hidden']),
+    target: LocatorSchema,
+  }).describe('Condition to check'),
+  then: z.array(BaseActionSchema).describe('Steps to execute if condition is true'),
+  else: z.array(BaseActionSchema).optional().describe('Steps to execute if condition is false'),
+}).describe('Execute steps conditionally based on element state');
+
+export const ActionSchema = z.union([BaseActionSchema, conditionalActionSchema]);
 
 const defaultsSchema = z.object({
   timeout: z.number().int().positive().optional().describe('Default timeout in milliseconds for all actions'),

@@ -163,6 +163,19 @@ const runWait = async (page: Page, action: Extract<Action, { type: 'wait' }>): P
   await page.waitForTimeout(action.timeout ?? 1000);
 };
 
+const waitForCondition = async (
+  checkFn: () => Promise<boolean>,
+  timeout: number,
+  errorMessage: string,
+): Promise<void> => {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (await checkFn()) return;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(errorMessage);
+};
+
 const runScroll = async (
   page: Page,
   action: Extract<Action, { type: 'scroll' }>,
@@ -677,6 +690,98 @@ async function executeActionWithRetry(
           console.log('[DEBUG] Pausing execution - Playwright Inspector will open');
           await page.pause();
           break;
+        }
+        case 'waitForSelector': {
+          const wsAction = action as Extract<Action, { type: 'waitForSelector' }>;
+          const handle = resolveLocator(page, wsAction.target);
+          const timeout = wsAction.timeout ?? 30000;
+
+          if (debugMode) {
+            console.log(`[DEBUG] Waiting for element to be ${wsAction.state}:`, wsAction.target);
+          }
+
+          switch (wsAction.state) {
+            case 'visible':
+            case 'hidden':
+            case 'attached':
+            case 'detached':
+              await handle.waitFor({ state: wsAction.state, timeout });
+              break;
+            case 'enabled':
+              await waitForCondition(
+                () => handle.isEnabled(),
+                timeout,
+                `Element did not become enabled within ${timeout}ms`,
+              );
+              break;
+            case 'disabled':
+              await waitForCondition(
+                () => handle.isDisabled(),
+                timeout,
+                `Element did not become disabled within ${timeout}ms`,
+              );
+              break;
+          }
+          break;
+        }
+        case 'conditional': {
+          const condAction = action as Extract<Action, { type: 'conditional' }>;
+          const handle = resolveLocator(page, condAction.condition.target);
+          let conditionMet = false;
+
+          if (debugMode) {
+            console.log(`[DEBUG] Checking condition ${condAction.condition.type}:`, condAction.condition.target);
+          }
+
+          try {
+            switch (condAction.condition.type) {
+              case 'exists':
+                await handle.waitFor({ state: 'attached', timeout: 500 });
+                conditionMet = true;
+                break;
+              case 'notExists':
+                try {
+                  await handle.waitFor({ state: 'detached', timeout: 500 });
+                  conditionMet = true;
+                } catch {
+                  conditionMet = false;
+                }
+                break;
+              case 'visible':
+                conditionMet = await handle.isVisible();
+                break;
+              case 'hidden':
+                conditionMet = !(await handle.isVisible());
+                break;
+            }
+          } catch {
+            // Element not found - condition is false unless we're checking for 'notExists'
+            conditionMet = condAction.condition.type === 'notExists';
+          }
+
+          if (debugMode) {
+            console.log(`[DEBUG] Condition result: ${conditionMet}`);
+          }
+
+          const stepsToRun = conditionMet ? condAction.then : (condAction.else ?? []);
+          for (const [nestedIdx, nestedAction] of stepsToRun.entries()) {
+            if (debugMode) {
+              console.log(`[DEBUG] Executing nested step ${nestedIdx + 1}: ${nestedAction.type}`);
+            }
+            await executeActionWithRetry(page, nestedAction, index, {
+              baseUrl,
+              context,
+              screenshotDir,
+              debugMode,
+              interactive,
+              aiConfig,
+            });
+          }
+          break;
+        }
+        case 'fail': {
+          const failAction = action as Extract<Action, { type: 'fail' }>;
+          throw new Error(failAction.message);
         }
         default:
           throw new Error(`Unsupported action type: ${(action as Action).type}`);

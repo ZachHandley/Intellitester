@@ -16,6 +16,7 @@ import type {
   PipelineWorkflowResult,
   WorkflowReference,
 } from '../../core/types';
+import { generateRandomUsername } from '../../core/randomUsername';
 import { loadWorkflowDefinition } from '../../core/loader';
 import {
   runWorkflowWithContext,
@@ -343,10 +344,13 @@ export async function runPipeline(
         // Apply workflow-level variables from pipeline
         if (workflowRef.variables) {
           for (const [key, value] of Object.entries(workflowRef.variables)) {
-            // Interpolate {{uuid}} and other variables
+            // Interpolate {{uuid}}, {{randomUsername}} and other variables
             const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
               if (varName === 'uuid') {
                 return crypto.randomUUID().split('-')[0];
+              }
+              if (varName === 'randomUsername') {
+                return generateRandomUsername();
               }
               return executionContext.variables.get(varName) ?? match;
             });

@@ -11,6 +11,7 @@ import {
 } from 'playwright';
 
 import type { Action, TestDefinition, WorkflowDefinition } from '../../core/types';
+import { generateRandomUsername } from '../../core/randomUsername';
 import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
@@ -112,6 +113,9 @@ function interpolateWorkflowVariables(
     if (path === 'uuid') {
       return crypto.randomUUID().split('-')[0]; // Short UUID
     }
+    if (path === 'randomUsername') {
+      return generateRandomUsername(); // e.g., "HappyTiger42"
+    }
     return currentVariables.get(path) ?? match;
   });
 }
@@ -149,6 +153,9 @@ async function runTestInWorkflow(
     return value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
       if (varName === 'uuid') {
         return crypto.randomUUID().split('-')[0];
+      }
+      if (varName === 'randomUsername') {
+        return generateRandomUsername(); // e.g., "HappyTiger42"
       }
       return context.variables.get(varName) ?? match;
     });
@@ -656,6 +663,7 @@ export async function runWorkflowWithContext(
       if (!executionContext.variables.has(key)) {
         const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
           if (varName === 'uuid') return crypto.randomUUID().split('-')[0];
+          if (varName === 'randomUsername') return generateRandomUsername();
           return executionContext.variables.get(varName) ?? match;
         });
         executionContext.variables.set(key, interpolated);
@@ -701,10 +709,13 @@ export async function runWorkflowWithContext(
       // Initialize test variables in execution context
       if (test.variables) {
         for (const [key, value] of Object.entries(test.variables)) {
-          // Interpolate {{uuid}} and other built-in variables
+          // Interpolate {{uuid}}, {{randomUsername}} and other built-in variables
           const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
             if (varName === 'uuid') {
               return crypto.randomUUID().split('-')[0];
+            }
+            if (varName === 'randomUsername') {
+              return generateRandomUsername();
             }
             return executionContext.variables.get(varName) ?? match;
           });
@@ -961,9 +972,10 @@ export async function runWorkflow(
   // 5b. Load workflow-level variables into execution context
   if (workflow.variables) {
     for (const [key, value] of Object.entries(workflow.variables)) {
-      // Interpolate special values like {{uuid}}
+      // Interpolate special values like {{uuid}} and {{randomUsername}}
       const interpolated = value.replace(/\{\{(\w+)\}\}/g, (match, varName) => {
         if (varName === 'uuid') return crypto.randomUUID().split('-')[0];
+        if (varName === 'randomUsername') return generateRandomUsername();
         return executionContext.variables.get(varName) ?? match;
       });
       executionContext.variables.set(key, interpolated);

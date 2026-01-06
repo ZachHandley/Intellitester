@@ -374,6 +374,113 @@ async function runTestInWorkflow(
             await page.pause();
             break;
           }
+          case 'waitForSelector': {
+            const handle = resolveLocator(action.target);
+            const timeout = action.timeout ?? 30000;
+
+            if (debugMode) {
+              console.log(`  [DEBUG] Waiting for element to be ${action.state}:`, action.target);
+            }
+
+            const waitForCondition = async (
+              checkFn: () => Promise<boolean>,
+              timeoutMs: number,
+              errorMessage: string,
+            ): Promise<void> => {
+              const start = Date.now();
+              while (Date.now() - start < timeoutMs) {
+                if (await checkFn()) return;
+                await new Promise((r) => setTimeout(r, 100));
+              }
+              throw new Error(errorMessage);
+            };
+
+            switch (action.state) {
+              case 'visible':
+              case 'hidden':
+              case 'attached':
+              case 'detached':
+                await handle.waitFor({ state: action.state, timeout });
+                break;
+              case 'enabled':
+                await waitForCondition(
+                  () => handle.isEnabled(),
+                  timeout,
+                  `Element did not become enabled within ${timeout}ms`,
+                );
+                break;
+              case 'disabled':
+                await waitForCondition(
+                  () => handle.isDisabled(),
+                  timeout,
+                  `Element did not become disabled within ${timeout}ms`,
+                );
+                break;
+            }
+            break;
+          }
+          case 'conditional': {
+            const handle = resolveLocator(action.condition.target);
+            let conditionMet = false;
+
+            if (debugMode) {
+              console.log(`  [DEBUG] Checking condition ${action.condition.type}:`, action.condition.target);
+            }
+
+            try {
+              switch (action.condition.type) {
+                case 'exists':
+                  await handle.waitFor({ state: 'attached', timeout: 500 });
+                  conditionMet = true;
+                  break;
+                case 'notExists':
+                  try {
+                    await handle.waitFor({ state: 'detached', timeout: 500 });
+                    conditionMet = true;
+                  } catch {
+                    conditionMet = false;
+                  }
+                  break;
+                case 'visible':
+                  conditionMet = await handle.isVisible();
+                  break;
+                case 'hidden':
+                  conditionMet = !(await handle.isVisible());
+                  break;
+              }
+            } catch {
+              conditionMet = action.condition.type === 'notExists';
+            }
+
+            if (debugMode) {
+              console.log(`  [DEBUG] Condition result: ${conditionMet}`);
+            }
+
+            // Execute nested steps - recursive call to handle nested actions
+            const stepsToRun = conditionMet ? action.then : (action.else ?? []);
+            for (const nestedAction of stepsToRun) {
+              // For nested actions, we need to execute them inline
+              // This is a simplified version - complex nesting would require refactoring
+              switch (nestedAction.type) {
+                case 'screenshot': {
+                  const filename = nestedAction.name ?? `conditional-step.png`;
+                  const filePath = path.join(screenshotDir, filename);
+                  await page.screenshot({ path: filePath, fullPage: true });
+                  results.push({ action: nestedAction, status: 'passed', screenshotPath: filePath });
+                  break;
+                }
+                case 'fail': {
+                  throw new Error(nestedAction.message);
+                }
+                default:
+                  throw new Error(`Nested action type ${nestedAction.type} in conditional not yet supported`);
+              }
+            }
+            break;
+          }
+          case 'fail': {
+            throw new Error(action.message);
+          }
           default:
             throw new Error(`Unsupported action type: ${(action as Action).type}`);
         }

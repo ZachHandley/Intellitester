@@ -17,6 +17,7 @@ import type {
   WorkflowReference,
 } from '../../core/types';
 import { interpolateVariables } from '../../core/interpolation';
+import { getBrowserLaunchOptions } from './browserOptions.js';
 import { loadWorkflowDefinition } from '../../core/loader';
 import {
   runWorkflowWithContext,
@@ -240,7 +241,7 @@ export async function runPipeline(
   // 6. Launch browser ONCE for entire pipeline
   const browserName = options.browser ?? pipeline.config?.web?.browser ?? 'chromium';
   const headless = options.headed === true ? false : (pipeline.config?.web?.headless ?? true);
-  const browser = await getBrowser(browserName).launch({ headless });
+  const browser = await getBrowser(browserName).launch(getBrowserLaunchOptions({ headless }));
   const browserContext = await browser.newContext();
   const page = await browserContext.newPage();
   page.setDefaultTimeout(30000);

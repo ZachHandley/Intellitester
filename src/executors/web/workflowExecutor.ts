@@ -15,6 +15,7 @@ import { interpolateVariables } from '../../core/interpolation';
 import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
+import { getBrowserLaunchOptions } from './browserOptions.js';
 import {
   createTestContext,
   APPWRITE_PATTERNS,
@@ -1031,7 +1032,7 @@ export async function runWorkflow(
   const browserName = options.browser ?? workflow.config?.web?.browser ?? 'chromium';
   const headless = options.headed === true ? false : (workflow.config?.web?.headless ?? true);
   console.log(`Launching ${browserName}${headless ? ' (headless)' : ' (visible)'}...`);
-  const browser = await getBrowser(browserName).launch({ headless });
+  const browser = await getBrowser(browserName).launch(getBrowserLaunchOptions({ headless }));
   console.log(`Browser launched successfully`);
   const browserContext = await browser.newContext();
   const page = await browserContext.newPage();

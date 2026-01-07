@@ -18,6 +18,7 @@ import { interpolateVariables } from '../../core/interpolation';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import { AppwriteTestClient, createTestContext, APPWRITE_PATTERNS, APPWRITE_UPDATE_PATTERNS, APPWRITE_DELETE_PATTERNS, type TrackedResource } from '../../integrations/appwrite';
+import { getBrowserLaunchOptions } from './browserOptions.js';
 import { getAISuggestion } from '../../ai/errorHelper';
 import { TrackingServer } from '../../tracking/trackingServer';
 
@@ -869,7 +870,7 @@ export const runWebTest = async (
 
   // Launch local browser
   console.log(`Launching ${browserName}${headless ? ' (headless)' : ' (visible)'}...`);
-  const browser = await getBrowser(browserName).launch({ headless });
+  const browser = await getBrowser(browserName).launch(getBrowserLaunchOptions({ headless }));
   console.log(`Browser launched successfully`);
 
   const browserContext = await browser.newContext();

@@ -784,6 +784,134 @@ async function executeActionWithRetry(
           const failAction = action as Extract<Action, { type: 'fail' }>;
           throw new Error(failAction.message);
         }
+        case 'waitForBranch': {
+          const wfbAction = action as Extract<Action, { type: 'waitForBranch' }>;
+          const handle = resolveLocator(page, wfbAction.target);
+          const timeout = wfbAction.timeout ?? 30000;
+          const state = wfbAction.state ?? 'visible';
+          const pollInterval = wfbAction.pollInterval ?? 100;
+
+          if (debugMode) {
+            console.log(`[DEBUG] waitForBranch: Waiting for element to be ${state}, timeout: ${timeout}ms`);
+          }
+
+          let elementAppeared = false;
+          const startTime = Date.now();
+
+          // Polling loop - does NOT throw on timeout
+          while (Date.now() - startTime < timeout) {
+            try {
+              switch (state) {
+                case 'visible':
+                  if (await handle.isVisible()) {
+                    elementAppeared = true;
+                  }
+                  break;
+                case 'attached':
+                  if ((await handle.count()) > 0) {
+                    elementAppeared = true;
+                  }
+                  break;
+                case 'enabled':
+                  if (await handle.isEnabled().catch(() => false)) {
+                    elementAppeared = true;
+                  }
+                  break;
+              }
+            } catch {
+              // Element not found yet, continue polling
+            }
+
+            if (elementAppeared) break;
+            await page.waitForTimeout(pollInterval);
+          }
+
+          if (debugMode) {
+            console.log(`[DEBUG] waitForBranch result: ${elementAppeared ? 'appeared' : 'timeout'}`);
+          }
+
+          // Determine which branch to execute
+          const branchToExecute = elementAppeared ? wfbAction.onAppear : wfbAction.onTimeout;
+
+          // If no branch defined (onTimeout omitted and timed out), silently continue
+          if (!branchToExecute) {
+            if (debugMode) {
+              console.log(`[DEBUG] No branch to execute, continuing silently`);
+            }
+            break;
+          }
+
+          // Execute the branch
+          if (Array.isArray(branchToExecute)) {
+            // Inline actions - execute each action recursively
+            for (const [nestedIdx, nestedAction] of branchToExecute.entries()) {
+              if (debugMode) {
+                console.log(`[DEBUG] Executing branch step ${nestedIdx + 1}: ${nestedAction.type}`);
+              }
+              await executeActionWithRetry(page, nestedAction, index, {
+                baseUrl,
+                context,
+                screenshotDir,
+                debugMode,
+                interactive,
+                aiConfig,
+              });
+            }
+          } else {
+            // Workflow file reference - load and execute workflow
+            const { loadWorkflowDefinition, loadTestDefinition } = await import('../../core/loader.js');
+
+            // Resolve relative to cwd
+            const workflowPath = path.resolve(process.cwd(), branchToExecute.workflow);
+            const workflowDir = path.dirname(workflowPath);
+
+            if (debugMode) {
+              console.log(`[DEBUG] Executing workflow: ${workflowPath}`);
+            }
+
+            const workflow = await loadWorkflowDefinition(workflowPath);
+
+            // Merge variables from branch definition
+            if (branchToExecute.variables) {
+              for (const [key, value] of Object.entries(branchToExecute.variables)) {
+                const interpolated = interpolateVariables(value, context.variables);
+                context.variables.set(key, interpolated);
+              }
+            }
+
+            // Execute each test reference in the workflow
+            for (const testRef of workflow.tests) {
+              const testFilePath = path.resolve(workflowDir, testRef.file);
+
+              if (debugMode) {
+                console.log(`[DEBUG] Loading test from workflow: ${testFilePath}`);
+              }
+
+              const test = await loadTestDefinition(testFilePath);
+
+              // Initialize test variables
+              if (test.variables) {
+                for (const [key, value] of Object.entries(test.variables)) {
+                  const interpolated = interpolateVariables(value, context.variables);
+                  context.variables.set(key, interpolated);
+                }
+              }
+
+              // Execute each step in the test
+              for (const [testStepIdx, testAction] of test.steps.entries()) {
+                await executeActionWithRetry(page, testAction, testStepIdx, {
+                  baseUrl,
+                  context,
+                  screenshotDir,
+                  debugMode,
+                  interactive,
+                  aiConfig,
+                });
+              }
+            }
+          }
+          break;
+        }
         default:
           throw new Error(`Unsupported action type: ${(action as Action).type}`);
       }
@@ -1150,7 +1278,17 @@ export const runWebTest = async (
       try {
         // Handle screenshot separately since it has special return handling
         if (action.type === 'screenshot') {
-          const screenshotPath = await runScreenshot(page, action.name, screenshotDir, index);
+          const ssAction = action as Extract<Action, { type: 'screenshot' }>;
+          const waitBefore = ssAction.waitBefore ?? 500;
+
+          if (waitBefore > 0) {
+            if (debugMode) {
+              console.log(`[DEBUG] Screenshot: waiting ${waitBefore}ms for visual stability`);
+            }
+            await page.waitForTimeout(waitBefore);
+          }
+
+          const screenshotPath = await runScreenshot(page, ssAction.name, screenshotDir, index);
           results.push({ action, status: 'passed', screenshotPath });
           continue;
         }

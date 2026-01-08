@@ -107,6 +107,7 @@ const scrollActionSchema = z.object({
 const screenshotActionSchema = z.object({
   type: z.literal('screenshot'),
   name: z.string().optional().describe('Name for the screenshot file'),
+  waitBefore: z.number().int().nonnegative().optional().describe('Milliseconds to wait before capturing for visual stability (default: 500)'),
 }).describe('Take a screenshot');
 
 const setVarActionSchema = z.object({
@@ -201,7 +202,26 @@ const conditionalActionSchema = z.object({
   else: z.array(BaseActionSchema).optional().describe('Steps to execute if condition is false'),
 }).describe('Execute steps conditionally based on element state');
 
-export const ActionSchema = z.union([BaseActionSchema, conditionalActionSchema]);
+// Branch definition - can be inline actions OR a workflow file reference
+const branchSchema = z.union([
+  z.array(BaseActionSchema),  // Inline actions
+  z.object({
+    workflow: z.string().trim().min(1).describe('Path to workflow file relative to current file'),
+    variables: z.record(z.string(), z.string()).optional().describe('Variables to pass to the workflow'),
+  }),
+]).describe('Actions to execute - either inline steps or a workflow file reference');
+
+const waitForBranchActionSchema = z.object({
+  type: z.literal('waitForBranch'),
+  target: LocatorSchema.describe('Element to wait for'),
+  timeout: z.number().int().positive().optional().describe('Maximum time to wait for element in milliseconds (default: 30000)'),
+  state: z.enum(['visible', 'attached', 'enabled']).optional().describe('Element state to wait for (default: visible)'),
+  onAppear: branchSchema.describe('Actions to execute when element appears within timeout'),
+  onTimeout: branchSchema.optional().describe('Actions to execute if timeout occurs (silent continue if omitted)'),
+  pollInterval: z.number().int().positive().optional().describe('How often to check for element in milliseconds (default: 100)'),
+}).describe('Wait for an element and branch based on whether it appears or times out');
+
+export const ActionSchema = z.union([BaseActionSchema, conditionalActionSchema, waitForBranchActionSchema]);
 
 const defaultsSchema = z.object({
   timeout: z.number().int().positive().optional().describe('Default timeout in milliseconds for all actions'),

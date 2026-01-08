@@ -64,6 +64,8 @@ function formatActionName(step: StepResult, index: number): string {
       return `step-${index + 1}: conditional ${action.condition.type}`;
     case 'fail':
       return `step-${index + 1}: fail`;
+    case 'waitForBranch':
+      return `step-${index + 1}: wait for branch`;
     default: {
       const _exhaustiveCheck: never = action;
       return `step-${index + 1}: unknown action`;

@@ -277,7 +277,12 @@ async function runTestInWorkflow(
             break;
           }
           case 'screenshot': {
-            const filename = action.name ?? `step-${index + 1}.png`;
+            const ssAction = action as Extract<Action, { type: 'screenshot' }>;
+            const waitBefore = ssAction.waitBefore ?? 500;
+            if (waitBefore > 0) {
+              await page.waitForTimeout(waitBefore);
+            }
+            const filename = ssAction.name ?? `step-${index + 1}.png`;
             const filePath = path.join(screenshotDir, filename);
             await page.screenshot({ path: filePath, fullPage: true });
             results.push({ action, status: 'passed', screenshotPath: filePath });
@@ -481,6 +486,185 @@ async function runTestInWorkflow(
           }
           case 'fail': {
             throw new Error(action.message);
+          }
+          case 'waitForBranch': {
+            const wfbAction = action as Extract<Action, { type: 'waitForBranch' }>;
+            const handle = resolveLocator(wfbAction.target);
+            const timeout = wfbAction.timeout ?? 30000;
+            const state = wfbAction.state ?? 'visible';
+            const pollInterval = wfbAction.pollInterval ?? 100;
+
+            if (debugMode) {
+              console.log(`  [DEBUG] waitForBranch: waiting for element to be ${state}:`, wfbAction.target);
+            }
+
+            // Poll for element state without throwing on timeout
+            const startTime = Date.now();
+            let elementAppeared = false;
+
+            while (Date.now() - startTime < timeout) {
+              try {
+                let conditionMet = false;
+                switch (state) {
+                  case 'visible':
+                    conditionMet = await handle.isVisible();
+                    break;
+                  case 'attached':
+                    conditionMet = (await handle.count()) > 0;
+                    break;
+                  case 'enabled':
+                    conditionMet = await handle.isEnabled().catch(() => false);
+                    break;
+                }
+                if (conditionMet) {
+                  elementAppeared = true;
+                  break;
+                }
+              } catch {
+                // Element not found yet, continue polling
+              }
+              await new Promise((r) => setTimeout(r, pollInterval));
+            }
+
+            if (debugMode) {
+              console.log(`  [DEBUG] waitForBranch: element ${elementAppeared ? 'appeared' : 'timed out'}`);
+            }
+
+            // Determine which branch to execute
+            const branch = elementAppeared ? wfbAction.onAppear : wfbAction.onTimeout;
+
+            if (branch) {
+              // Check if branch is inline actions (array) or workflow reference (object with workflow property)
+              if (Array.isArray(branch)) {
+                // Inline actions - execute recursively
+                for (const nestedAction of branch) {
+                  if (debugMode) {
+                    console.log(`  [DEBUG] waitForBranch: executing nested action ${nestedAction.type}`);
+                  }
+                  // Execute nested action inline (simplified - complex actions may need full handler)
+                  switch (nestedAction.type) {
+                    case 'navigate': {
+                      const interpolated = interpolate(nestedAction.value);
+                      const baseUrl = test.config?.web?.baseUrl ?? workflowBaseUrl;
+                      const target = resolveUrl(interpolated, baseUrl);
+                      await page.goto(target);
+                      break;
+                    }
+                    case 'tap': {
+                      const nestedHandle = resolveLocator(nestedAction.target);
+                      await nestedHandle.click();
+                      break;
+                    }
+                    case 'input': {
+                      const interpolated = interpolate(nestedAction.value);
+                      const nestedHandle = resolveLocator(nestedAction.target);
+                      await nestedHandle.fill(interpolated);
+                      break;
+                    }
+                    case 'screenshot': {
+                      const nestedSsAction = nestedAction as Extract<Action, { type: 'screenshot' }>;
+                      const nestedWaitBefore = nestedSsAction.waitBefore ?? 500;
+                      if (nestedWaitBefore > 0) {
+                        await page.waitForTimeout(nestedWaitBefore);
+                      }
+                      const filename = nestedSsAction.name ?? `waitForBranch-step.png`;
+                      const filePath = path.join(screenshotDir, filename);
+                      await page.screenshot({ path: filePath, fullPage: true });
+                      results.push({ action: nestedAction, status: 'passed', screenshotPath: filePath });
+                      break;
+                    }
+                    case 'wait': {
+                      if (nestedAction.target) {
+                        const nestedHandle = resolveLocator(nestedAction.target);
+                        await nestedHandle.waitFor({ state: 'visible', timeout: nestedAction.timeout });
+                      } else {
+                        await page.waitForTimeout(nestedAction.timeout ?? 1000);
+                      }
+                      break;
+                    }
+                    case 'fail': {
+                      throw new Error(nestedAction.message);
+                    }
+                    case 'setVar': {
+                      let value: string;
+                      if (nestedAction.value) {
+                        value = interpolate(nestedAction.value);
+                      } else {
+                        throw new Error('setVar in waitForBranch requires value');
+                      }
+                      context.variables.set(nestedAction.name, value);
+                      if (debugMode) console.log(`  [DEBUG] Set variable ${nestedAction.name} = ${value}`);
+                      break;
+                    }
+                    case 'assert': {
+                      const nestedHandle = resolveLocator(nestedAction.target);
+                      await nestedHandle.waitFor({ state: 'visible' });
+                      if (nestedAction.value) {
+                        const interpolated = interpolate(nestedAction.value);
+                        const text = (await nestedHandle.textContent())?.trim() ?? '';
+                        if (!text.includes(interpolated)) {
+                          throw new Error(
+                            `Assertion failed: expected "${interpolated}", got "${text}"`
+                          );
+                        }
+                      }
+                      break;
+                    }
+                    default:
+                      throw new Error(`Nested action type ${nestedAction.type} in waitForBranch not yet supported`);
+                  }
+                  results.push({ action: nestedAction, status: 'passed' });
+                }
+              } else if (typeof branch === 'object' && 'workflow' in branch) {
+                // Workflow reference - load and execute
+                const workflowPath = path.resolve(_workflowDir, branch.workflow);
+                if (debugMode) {
+                  console.log(`  [DEBUG] waitForBranch: loading workflow from ${workflowPath}`);
+                }
+                const { loadWorkflowDefinition } = await import('../../core/loader.js');
+                const nestedWorkflow = await loadWorkflowDefinition(workflowPath);
+
+                // Inject variables if provided
+                if (branch.variables) {
+                  for (const [key, value] of Object.entries(branch.variables)) {
+                    const interpolated = interpolate(value);
+                    context.variables.set(key, interpolated);
+                  }
+                }
+
+                // Run nested workflow tests
+                for (const testRef of nestedWorkflow.tests) {
+                  const testFilePath = path.resolve(path.dirname(workflowPath), testRef.file);
+                  const nestedTest = await loadTestDefinition(testFilePath);
+
+                  // Initialize test variables
+                  if (nestedTest.variables) {
+                    for (const [key, value] of Object.entries(nestedTest.variables)) {
+                      const interpolated = interpolateVariables(value, context.variables);
+                      context.variables.set(key, interpolated);
+                    }
+                  }
+
+                  const nestedResult = await runTestInWorkflow(
+                    nestedTest,
+                    page,
+                    context,
+                    options,
+                    path.dirname(workflowPath),
+                    nestedWorkflow.config?.web?.baseUrl ?? workflowBaseUrl
+                  );
+
+                  results.push(...nestedResult.steps);
+
+                  if (nestedResult.status === 'failed') {
+                    throw new Error(`Nested workflow test failed in waitForBranch`);
+                  }
+                }
+              }
+            } else if (!elementAppeared && debugMode) {
+              console.log(`  [DEBUG] waitForBranch: timeout occurred but no onTimeout branch defined, continuing silently`);
+            }
+            break;
           }
           default:
             throw new Error(`Unsupported action type: ${(action as Action).type}`);

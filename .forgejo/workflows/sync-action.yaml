@@ -1,0 +1,44 @@
+name: Sync Action to Actions Repo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'action.yml'
+
+jobs:
+  sync-action:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Intellitester
+        uses: actions/checkout@v4
+
+      - name: Checkout Actions Repo
+        uses: actions/checkout@v4
+        with:
+          repository: BlackLeafDigital/actions
+          token: ${{ secrets.FORGEJO_ACTIONS_TOKEN }}
+          path: actions-repo
+
+      - name: Check if action.yml changed
+        id: check-diff
+        run: |
+          if diff -q action.yml actions-repo/intellitester/action.yml > /dev/null 2>&1; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "No changes detected in action.yml"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "action.yml has changed, will sync to actions repo"
+          fi
+
+      - name: Copy and commit to actions repo
+        if: steps.check-diff.outputs.changed == 'true'
+        working-directory: actions-repo
+        run: |
+          cp ../action.yml intellitester/action.yml
+          git config user.name "zachhandley"
+          git config user.email "zach@blackleafdigital.com"
+          git add intellitester/action.yml
+          git diff --staged --quiet || git commit -m "chore: sync intellitester action.yml from Intellitester@${{ github.sha }}"
+          git push https://zachhandley:${{ secrets.FORGEJO_ACTIONS_TOKEN }}@forge.blackleafdigital.com/BlackLeafDigital/actions.git main

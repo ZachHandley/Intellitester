@@ -101,77 +101,88 @@ runs:
         add_dev() {
           # Detect workspace from working directory
           IS_WORKSPACE="false"
-          if [[ -f "$WORK_DIR/pnpm-workspace.yaml" ]] || grep -q '"workspaces"' "$WORK_DIR/package.json" 2>/dev/null; then
-            IS_WORKSPACE="true"
+          WORKSPACE_ROOT=""
+          if [[ -f "$WORK_DIR/pnpm-workspace.yaml" ]]; then
+            # pnpm workspace: walk up to find root
+            CHECK_DIR="$WORK_DIR"
+            while [[ "$CHECK_DIR" != "." && "$CHECK_DIR" != "" ]]; do
+              if [[ -f "$CHECK_DIR/pnpm-workspace.yaml" ]]; then
+                IS_WORKSPACE="true"
+                WORKSPACE_ROOT="$CHECK_DIR"
+                break
+              fi
+              CHECK_DIR=$(dirname "$CHECK_DIR")
+            done
+          elif grep -q '"workspaces"' "$WORK_DIR/package.json" 2>/dev/null; then
+            # npm/yarn workspace: walk up to find root
+            CHECK_DIR="$WORK_DIR"
+            while [[ "$CHECK_DIR" != "." && "$CHECK_DIR" != "" ]]; do
+              if grep -q '"workspaces"' "$CHECK_DIR/package.json" 2>/dev/null; then
+                IS_WORKSPACE="true"
+                WORKSPACE_ROOT="$CHECK_DIR"
+                break
+              fi
+              CHECK_DIR=$(dirname "$CHECK_DIR")
+            done
           fi
 
-          # For Bun: find the workspace from working directory
-          BUN_WORKSPACE_DIR=""
-          if [[ "$PM" == "bun" && "$IS_WORKSPACE" == "true" ]]; then
-            # Start from working directory, walk up to find workspace package.json
-            CURRENT_DIR="$WORK_DIR"
-            # Remove leading ./ if present
-            CURRENT_DIR="${CURRENT_DIR#./}"
-            # If working-directory is root, try to find any workspace
-            if [[ -z "$CURRENT_DIR" || "$CURRENT_DIR" == "." ]]; then
-              # Try to find first workspace directory
-              WORKSPACES=$(grep -o '"workspaces": \[[^]]*\]' "$WORK_DIR/package.json" 2>/dev/null | grep -o '"[^"]*"' | tr -d '"' | head -1)
-              if [[ -n "$WORKSPACES" ]]; then
-                # Expand glob pattern to find first workspace
-                BUN_WORKSPACE_DIR=$(find "$WORK_DIR/$WORKSPACES" -mindepth 1 -maxdepth 2 -name "package.json" -exec dirname {} \; | head -1)
-              fi
+          # Find workspace package directory (relative path for pnpm/yarn/npm, absolute for bun)
+          WORKSPACE_PKG_DIR=""
+          if [[ "$IS_WORKSPACE" == "true" ]]; then
+            # Check if working directory has package.json (it's a workspace package)
+            if [[ -f "$WORK_DIR/package.json" ]]; then
+              # For bun: absolute path; for others: relative to workspace root
+              WORKSPACE_PKG_DIR="$WORK_DIR"
             else
-              # Check if working-directory has package.json (it's a workspace)
-              if [[ -f "$WORK_DIR/package.json" ]]; then
-                BUN_WORKSPACE_DIR="$WORK_DIR"
-              else
-                # Walk up from working directory to find workspace
-                WALK_DIR="$WORK_DIR"
-                while [[ "$WALK_DIR" != "." && "$WALK_DIR" != "" ]]; do
-                  if [[ -f "$WALK_DIR/package.json" ]]; then
-                    BUN_WORKSPACE_DIR="$WALK_DIR"
-                    break
-                  fi
-                  WALK_DIR=$(dirname "$WALK_DIR")
-                done
-              fi
+              # Walk up to find a workspace package
+              WALK_DIR="$WORK_DIR"
+              while [[ "$WALK_DIR" != "." && "$WALK_DIR" != "" ]]; do
+                if [[ -f "$WALK_DIR/package.json" ]]; then
+                  WORKSPACE_PKG_DIR="$WALK_DIR"
+                  break
+                fi
+                WALK_DIR=$(dirname "$WALK_DIR")
+              done
             fi
 
-            # Fail if workspace not found
-            if [[ -z "$BUN_WORKSPACE_DIR" ]]; then
-              echo "Error: Could not detect Bun workspace directory."
-              echo "Please specify 'working-directory' pointing to your workspace, or ensure your workspace has a package.json"
+            # Fail if workspace package not found
+            if [[ -z "$WORKSPACE_PKG_DIR" ]]; then
+              echo "Error: Could not detect workspace package directory."
+              echo "Please specify 'working-directory' pointing to your workspace package."
               exit 1
             fi
           fi
 
           case "$PM" in
             pnpm)
-              if [[ "$IS_WORKSPACE" == "true" ]]; then
-                pnpm add -D -w "$1"  # -w = --workspace-root
+              if [[ -n "$WORKSPACE_PKG_DIR" ]]; then
+                REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
+                pnpm add -D --filter "./$REL_PATH" "$1"
               else
                 pnpm add -D "$1"
               fi
               ;;
             yarn)
-              if [[ "$IS_WORKSPACE" == "true" ]]; then
-                yarn add -D -W "$1"  # -W (capital W) = workspace root
+              if [[ -n "$WORKSPACE_PKG_DIR" ]]; then
+                REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
+                yarn add -D --workspace "./$REL_PATH" "$1"
               else
                 yarn add -D "$1"
               fi
               ;;
             bun)
-              # Bun: use --cwd to add to specific workspace directory
-              if [[ -n "$BUN_WORKSPACE_DIR" ]]; then
-                bun add -D "$1" --cwd "$BUN_WORKSPACE_DIR"
+              # Bun: use --cwd with absolute path
+              if [[ -n "$WORKSPACE_PKG_DIR" ]]; then
+                bun add -D "$1" --cwd "$WORKSPACE_PKG_DIR"
               else
                 bun add -D "$1"
               fi
               ;;
             *)
-              # npm workspaces - use -w . for root workspace
-              if [[ "$IS_WORKSPACE" == "true" ]]; then
-                npm install -D -w . "$1"
+              # npm workspaces
+              if [[ -n "$WORKSPACE_PKG_DIR" ]]; then
+                REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
+                npm install -D --workspace "./$REL_PATH" "$1"
               else
                 npm install -D "$1"
               fi

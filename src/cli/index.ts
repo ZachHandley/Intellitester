@@ -82,7 +82,8 @@ const execCommand = async (cmd: string, args: string[], cwd: string): Promise<vo
  */
 const buildAndPreview = async (
   config: any,
-  cwd: string
+  cwd: string,
+  freshBuild = false
 ): Promise<{ previewProcess: ChildProcess | null; cleanup: () => void }> => {
   const pm = await detectPackageManager();
   const previewConfig = config?.preview || {};
@@ -99,10 +100,22 @@ const buildAndPreview = async (
   const previewUrl = previewConfig.url || config?.webServer?.url || config?.platforms?.web?.baseUrl || 'http://localhost:4321';
   const timeout = previewConfig.timeout || 60000;
 
-  // Run build
-  console.log('\n📦 Building project...\n');
-  await execCommand(buildExec, buildArgs, cwd);
-  console.log('\n✅ Build complete\n');
+  // Check if build artifacts exist
+  const fs = await import('fs/promises');
+  const buildDirs = ['dist', 'build', '.next', '.output', '.astro'];
+  const hasArtifacts = await Promise.all(
+    buildDirs.map(dir => fs.access(dir).then(() => true).catch(() => false))
+  );
+  const artifactsExist = hasArtifacts.some(Boolean);
+
+  // Run build (unless artifacts exist and --fresh-build not set)
+  if (!artifactsExist || freshBuild) {
+    console.log('\n📦 Building project...\n');
+    await execCommand(buildExec, buildArgs, cwd);
+    console.log('\n✅ Build complete\n');
+  } else {
+    console.log('\n⏭️ Skipping build (using existing artifacts)\n');
+  }
 
   // Start preview server
   console.log('\n🚀 Starting preview server...\n');
@@ -801,6 +814,8 @@ const main = async (): Promise<void> => {
     .option('--visible', 'Run browser in visible mode (not headless)')
     .option('--browser <name>', 'Browser to use (chrome, safari, firefox)', 'chrome')
     .option('--preview', 'Build project and run against preview server')
+    .option('--prod', 'Alias for --preview - build and serve production build')
+    .option('--fresh-build', 'Force a fresh build even if artifacts exist')
     .option('--no-server', 'Skip auto-starting web server')
     .option('-i, --interactive', 'Interactive mode - AI suggests fixes on failure')
     .option('--debug', 'Debug mode - verbose logging')
@@ -810,6 +825,8 @@ const main = async (): Promise<void> => {
       visible?: boolean;
       browser?: string;
       preview?: boolean;
+      prod?: boolean;
+      freshBuild?: boolean;
       server?: boolean;
       interactive?: boolean;
       debug?: boolean;
@@ -822,11 +839,11 @@ const main = async (): Promise<void> => {
         // Resolve browser alias
         const browser = resolveBrowserName(options.browser || 'chrome');
 
-        // Handle preview mode
-        if (options.preview) {
+        // Handle preview/prod mode
+        if (options.preview || options.prod) {
           const hasConfigFile = await fileExists(CONFIG_FILENAME);
           const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
-          const { cleanup } = await buildAndPreview(config, process.cwd());
+          const { cleanup } = await buildAndPreview(config, process.cwd(), options.freshBuild);
           previewCleanup = cleanup;
         }
 

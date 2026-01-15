@@ -42,6 +42,14 @@ inputs:
     description: 'Playwright browsers to install (chromium, firefox, webkit)'
     required: false
     default: 'chromium'
+  prod:
+    description: 'Alias for preview - build and serve production build'
+    required: false
+    default: 'false'
+  fresh-build:
+    description: 'Force a fresh build (default: skips build if artifacts exist)'
+    required: false
+    default: 'false'
 
 runs:
   using: 'composite'
@@ -154,4 +162,6 @@ runs:
         npx intellitester run \
           ${{ inputs.test-file }} \
           ${{ inputs.preview == 'true' && '--preview' || '' }} \
+          ${{ inputs.prod == 'true' && '--prod' || '' }} \
+          ${{ inputs.fresh-build == 'true' && '--fresh-build' || '' }} \
           --browser ${{ inputs.browser }}

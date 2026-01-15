@@ -98,11 +98,83 @@ runs:
         ACTION_REF: ${{ github.action_ref }}
       run: |
         add_dev() {
+          # Detect workspace
+          IS_WORKSPACE="false"
+          if [[ -f "pnpm-workspace.yaml" ]] || grep -q '"workspaces"' package.json 2>/dev/null; then
+            IS_WORKSPACE="true"
+          fi
+
+          # For Bun: find the workspace from working directory
+          BUN_WORKSPACE_DIR=""
+          if [[ "$PM" == "bun" && "$IS_WORKSPACE" == "true" ]]; then
+            # Start from working directory, walk up to find workspace package.json
+            CURRENT_DIR="${{ inputs.working-directory }}"
+            # Remove leading ./ if present
+            CURRENT_DIR="${CURRENT_DIR#./}"
+            # If working-directory is root, try to find any workspace
+            if [[ -z "$CURRENT_DIR" || "$CURRENT_DIR" == "." ]]; then
+              # Try to find first workspace directory
+              WORKSPACES=$(grep -o '"workspaces": \[[^]]*\]' package.json 2>/dev/null | grep -o '"[^"]*"' | tr -d '"' | head -1)
+              if [[ -n "$WORKSPACES" ]]; then
+                # Expand glob pattern to find first workspace
+                BUN_WORKSPACE_DIR=$(find "$WORKSPACES" -mindepth 1 -maxdepth 2 -name "package.json" -exec dirname {} \; | head -1)
+              fi
+            else
+              # Check if working-directory has package.json (it's a workspace)
+              if [[ -f "$CURRENT_DIR/package.json" ]]; then
+                BUN_WORKSPACE_DIR="$CURRENT_DIR"
+              else
+                # Walk up from working directory to find workspace
+                WALK_DIR="$CURRENT_DIR"
+                while [[ "$WALK_DIR" != "." && "$WALK_DIR" != "" ]]; do
+                  if [[ -f "$WALK_DIR/package.json" ]]; then
+                    BUN_WORKSPACE_DIR="$WALK_DIR"
+                    break
+                  fi
+                  WALK_DIR=$(dirname "$WALK_DIR")
+                done
+              fi
+            fi
+
+            # Fail if workspace not found
+            if [[ -z "$BUN_WORKSPACE_DIR" ]]; then
+              echo "Error: Could not detect Bun workspace directory."
+              echo "Please specify 'working-directory' pointing to your workspace, or ensure your workspace has a package.json"
+              exit 1
+            fi
+          fi
+
           case "$PM" in
-            pnpm) pnpm add -D "$1" ;;
-            yarn) yarn add -D "$1" ;;
-            bun)  bun add -D "$1" ;;
-            *)    npm install -D "$1" ;;
+            pnpm)
+              if [[ "$IS_WORKSPACE" == "true" ]]; then
+                pnpm add -D -w "$1"  # -w = --workspace-root
+              else
+                pnpm add -D "$1"
+              fi
+              ;;
+            yarn)
+              if [[ "$IS_WORKSPACE" == "true" ]]; then
+                yarn add -D -W "$1"  # -W (capital W) = workspace root
+              else
+                yarn add -D "$1"
+              fi
+              ;;
+            bun)
+              # Bun: use --cwd to add to specific workspace directory
+              if [[ -n "$BUN_WORKSPACE_DIR" ]]; then
+                bun add -D "$1" --cwd "$BUN_WORKSPACE_DIR"
+              else
+                bun add -D "$1"
+              fi
+              ;;
+            *)
+              # npm workspaces - use -w . for root workspace
+              if [[ "$IS_WORKSPACE" == "true" ]]; then
+                npm install -D -w . "$1"
+              else
+                npm install -D "$1"
+              fi
+              ;;
           esac
         }
         # Get version from action ref (e.g., v0.2.23 -> 0.2.23)

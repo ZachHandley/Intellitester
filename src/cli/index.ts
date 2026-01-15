@@ -843,7 +843,20 @@ const main = async (): Promise<void> => {
         if (options.preview || options.prod) {
           const hasConfigFile = await fileExists(CONFIG_FILENAME);
           const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
-          const { cleanup } = await buildAndPreview(config, process.cwd(), options.freshBuild);
+          // Use webServer.cwd from config if specified, otherwise use current directory
+          const previewCwd = config?.webServer?.cwd
+            ? path.resolve(process.cwd(), config.webServer.cwd)
+            : process.cwd();
+          // Load .env from test app directory (overrides repo root .env vars)
+          // Repo root .env is loaded at CLI startup, test app .env takes precedence
+          if (previewCwd !== process.cwd()) {
+            const appEnvPath = path.join(previewCwd, '.env');
+            if (await fileExists(appEnvPath)) {
+              dotenv.config({ path: appEnvPath, override: true });
+              console.log(`Loaded .env from ${previewCwd}`);
+            }
+          }
+          const { cleanup } = await buildAndPreview(config, previewCwd, options.freshBuild);
           previewCleanup = cleanup;
         }
 

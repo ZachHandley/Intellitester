@@ -156,16 +156,28 @@ runs:
           case "$PM" in
             pnpm)
               if [[ -n "$WORKSPACE_PKG_DIR" ]]; then
-                REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
-                pnpm add -D --filter "./$REL_PATH" "$1"
+                # Calculate relative path from workspace root to package dir
+                if [[ "$WORKSPACE_PKG_DIR" == "$WORKSPACE_ROOT" || "$WORKSPACE_PKG_DIR" == "." ]]; then
+                  # Package is at workspace root - no filter needed, use --workspace-root
+                  pnpm add -D -w "$1"
+                else
+                  REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
+                  pnpm add -D --filter "./$REL_PATH" "$1"
+                fi
               else
                 pnpm add -D "$1"
               fi
               ;;
             yarn)
               if [[ -n "$WORKSPACE_PKG_DIR" ]]; then
-                REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
-                yarn add -D --workspace "./$REL_PATH" "$1"
+                # Calculate relative path from workspace root to package dir
+                if [[ "$WORKSPACE_PKG_DIR" == "$WORKSPACE_ROOT" || "$WORKSPACE_PKG_DIR" == "." ]]; then
+                  # Package is at workspace root - add directly
+                  yarn add -D "$1"
+                else
+                  REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
+                  yarn add -D --workspace "./$REL_PATH" "$1"
+                fi
               else
                 yarn add -D "$1"
               fi
@@ -181,8 +193,14 @@ runs:
             *)
               # npm workspaces
               if [[ -n "$WORKSPACE_PKG_DIR" ]]; then
-                REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
-                npm install -D --workspace "./$REL_PATH" "$1"
+                # Calculate relative path from workspace root to package dir
+                if [[ "$WORKSPACE_PKG_DIR" == "$WORKSPACE_ROOT" || "$WORKSPACE_PKG_DIR" == "." ]]; then
+                  # Package is at workspace root - add directly
+                  npm install -D "$1"
+                else
+                  REL_PATH="${WORKSPACE_PKG_DIR#$WORKSPACE_ROOT/}"
+                  npm install -D --workspace "./$REL_PATH" "$1"
+                fi
               else
                 npm install -D "$1"
               fi

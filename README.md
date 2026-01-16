@@ -12,6 +12,33 @@ npx playwright install chromium
 npx playwright install
 ```
 
+## AI Assistant Integration
+
+IntelliTester can generate comprehensive documentation for AI assistants (Claude, GPT, etc.) to help them write effective tests.
+
+### Generate Guide
+
+Use the `guide` command to create an `intellitester_guide.md` file in your project:
+
+```bash
+intellitester guide
+# Or use the alias:
+intellitester init-guide
+```
+
+This generates a detailed reference document that AI assistants can read to understand:
+- All action types and their syntax
+- Target selector options (testId, text, css, xpath, role, description)
+- Variable interpolation and built-in generators
+- Best practices for test organization
+- Common testing patterns (login flows, form submissions, email verification)
+- Configuration options for tests, workflows, and pipelines
+
+The guide is particularly useful when:
+- Using AI assistants to generate test files
+- Onboarding team members who use AI coding tools
+- Maintaining consistent test patterns across a team
+
 ## Editor Configuration
 
 IntelliTester provides JSON schemas for YAML configuration files to enable autocomplete and validation in VS Code and other editors.
@@ -25,7 +52,8 @@ Add this to your `.vscode/settings.json` (or workspace settings):
   "yaml.schemas": {
     "./node_modules/intellitester/schemas/intellitester.config.schema.json": "intellitester.config.yaml",
     "./node_modules/intellitester/schemas/test.schema.json": "*.test.yaml",
-    "./node_modules/intellitester/schemas/workflow.schema.json": "*.workflow.yaml"
+    "./node_modules/intellitester/schemas/workflow.schema.json": "*.workflow.yaml",
+    "./node_modules/intellitester/schemas/pipeline.schema.json": "*.pipeline.yaml"
   }
 }
 ```
@@ -45,7 +73,8 @@ If you're working on IntelliTester itself or want to use local schemas, use thes
   "yaml.schemas": {
     "./schemas/intellitester.config.schema.json": "intellitester.config.yaml",
     "./schemas/test.schema.json": "*.test.yaml",
-    "./schemas/workflow.schema.json": "*.workflow.yaml"
+    "./schemas/workflow.schema.json": "*.workflow.yaml",
+    "./schemas/pipeline.schema.json": "*.pipeline.yaml"
   }
 }
 ```
@@ -83,6 +112,37 @@ When execution pauses, you can:
 - Step through actions manually
 - Examine selectors and elements
 - Continue execution when ready
+
+## Fast-Fail Conditions (errorIf)
+
+Use `errorIf` to fail a step immediately when a condition is met, without waiting for timeouts:
+
+```yaml
+steps:
+  - type: tap
+    target: { testId: login-btn }
+    errorIf: not-found  # Fail immediately if element not found
+
+  - type: assert
+    target: { testId: welcome-msg }
+    errorIf: not-visible  # Fail if element exists but not visible
+
+  - type: input
+    target: { testId: email }
+    value: test@example.com
+    errorIf: disabled  # Fail if input is disabled
+```
+
+**Available conditions:**
+
+| Condition | Description |
+|-----------|-------------|
+| `not-found` | Element doesn't exist in DOM |
+| `not-visible` | Element exists but not visible |
+| `disabled` | Element is disabled |
+| `empty` | Element has no text content |
+
+> **Note:** `testId` now matches `data-testid`, `id`, and `class` attributes in that order.
 
 ## Resource Cleanup
 
@@ -215,3 +275,126 @@ intellitester run --session-id my-session --track-dir .intellitester/track
 ```
 
 If `INTELLITESTER_TRACK_URL` is set, `track()` will send HTTP requests and also append to the track file (when available). If only the file is set, `track()` writes locally.
+
+## Pipelines & Workflows
+
+IntelliTester supports three levels of test organization:
+
+### Test Files (`*.test.yaml`)
+
+A single test with a sequence of steps. The most basic building block.
+
+```yaml
+name: Login Test
+platform: web
+variables:
+  EMAIL: test@example.com
+steps:
+  - type: navigate
+    value: /login
+  - type: input
+    target: { testId: email }
+    value: ${EMAIL}
+  - type: input
+    target: { testId: password }
+    value: secret123
+  - type: tap
+    target: { text: Sign In }
+  - type: assert
+    target: { text: Welcome }
+```
+
+### Workflows (`*.workflow.yaml`)
+
+Multiple tests run in sequence with a shared browser session. Tests share cookies, local storage, and authentication state.
+
+```yaml
+name: User Onboarding
+platform: web
+config:
+  web:
+    baseUrl: http://localhost:3000
+continueOnFailure: false
+tests:
+  - file: ./signup.test.yaml
+    id: signup
+  - file: ./verify-email.test.yaml
+    id: verify
+    variables:
+      EMAIL: ${signup.EMAIL}
+  - file: ./complete-profile.test.yaml
+```
+
+### Pipelines (`*.pipeline.yaml`)
+
+Multiple workflows with shared browser session, dependencies, and variables. Pipelines orchestrate complex test suites with control over execution order and failure handling.
+
+```yaml
+name: Full E2E Suite
+platform: web
+on_failure: skip  # skip | fail | ignore
+cleanup_on_failure: true
+config:
+  web:
+    baseUrl: http://localhost:3000
+  webServer:
+    command: npm run dev
+    url: http://localhost:3000
+    reuseExistingServer: true
+    timeout: 30000
+workflows:
+  - file: ./auth.workflow.yaml
+    id: auth
+    on_failure: fail  # Stop pipeline if auth fails
+
+  - file: ./dashboard.workflow.yaml
+    id: dashboard
+    depends_on: [auth]
+    variables:
+      USER_TOKEN: ${auth.TOKEN}
+
+  - file: ./settings.workflow.yaml
+    depends_on: [auth]
+    on_failure: ignore  # Continue even if settings tests fail
+
+  - file: ./cleanup.workflow.yaml
+    depends_on: [dashboard, settings]
+```
+
+### Pipeline Features
+
+**Workflow Properties:**
+
+| Property | Description |
+|----------|-------------|
+| `file` | Path to the workflow file (required) |
+| `id` | Identifier for referencing in `depends_on` and variable passing |
+| `depends_on` | Array of workflow IDs that must complete first |
+| `variables` | Variables to inject, can reference outputs from dependencies |
+| `on_failure` | How to handle failure: `skip`, `fail`, or `ignore` |
+
+**Failure Handling (`on_failure`):**
+
+- `skip` - Skip dependent workflows, continue independent ones (default)
+- `fail` - Stop the entire pipeline immediately
+- `ignore` - Continue as if the workflow succeeded
+
+**Web Server (`config.webServer`):**
+
+Start a dev server automatically before running tests:
+
+```yaml
+config:
+  webServer:
+    command: npm run dev        # Command to start server
+    url: http://localhost:3000  # Wait for this URL
+    reuseExistingServer: true   # Use existing if running
+    timeout: 30000              # Startup timeout (ms)
+```
+
+**Shared Browser Session:**
+
+All workflows in a pipeline share the same browser context, preserving:
+- Cookies and session storage
+- Authentication state
+- Local storage data

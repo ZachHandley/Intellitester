@@ -24,6 +24,7 @@ import type { CleanupConfig } from '../core/cleanup/types.js';
 import { validateEnvVars } from './envHelper';
 
 const CONFIG_FILENAME = 'intellitester.config.yaml';
+const GUIDE_FILENAME = 'intellitester_guide.md';
 
 /**
  * Map common browser names to Playwright browser names.
@@ -382,6 +383,892 @@ const writeFileIfMissing = async (filePath: string, contents: string): Promise<v
   if (await fileExists(filePath)) return;
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, contents, 'utf8');
+};
+
+const generateGuideContent = (): string => {
+  return `# IntelliTester Guide for AI Assistants
+
+This guide provides comprehensive documentation for AI assistants (Claude, GPT, etc.) to write IntelliTester tests effectively.
+
+## File Types Overview
+
+IntelliTester supports three types of test definition files:
+
+### \`*.test.yaml\` - Single Tests
+
+A single test file contains one test with a sequence of steps. This is the most basic building block.
+
+\`\`\`yaml
+name: Login Test
+platform: web
+variables:
+  EMAIL: test@example.com
+steps:
+  - type: navigate
+    value: /login
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+  - type: tap
+    target: { text: Sign In }
+  - type: assert
+    target: { text: Welcome }
+\`\`\`
+
+### \`*.workflow.yaml\` - Multiple Tests with Shared Session
+
+Workflows run multiple tests in sequence with a shared browser session. Tests share cookies, local storage, and authentication state.
+
+\`\`\`yaml
+name: User Onboarding
+platform: web
+config:
+  web:
+    baseUrl: http://localhost:3000
+continueOnFailure: false
+tests:
+  - file: ./signup.test.yaml
+    id: signup
+  - file: ./verify-email.test.yaml
+    id: verify
+    variables:
+      EMAIL: \${signup.EMAIL}
+  - file: ./complete-profile.test.yaml
+\`\`\`
+
+### \`*.pipeline.yaml\` - Multiple Workflows with Dependencies
+
+Pipelines orchestrate multiple workflows with dependencies, shared browser session, and control over execution order.
+
+\`\`\`yaml
+name: Full E2E Suite
+platform: web
+on_failure: skip
+cleanup_on_failure: true
+config:
+  web:
+    baseUrl: http://localhost:3000
+workflows:
+  - file: ./auth.workflow.yaml
+    id: auth
+    on_failure: fail
+
+  - file: ./dashboard.workflow.yaml
+    id: dashboard
+    depends_on: [auth]
+    variables:
+      USER_TOKEN: \${auth.TOKEN}
+
+  - file: ./settings.workflow.yaml
+    depends_on: [auth]
+    on_failure: ignore
+\`\`\`
+
+---
+
+## Action Types Reference
+
+### Navigation & Page Actions
+
+#### \`navigate\`
+Navigate to a URL or path.
+
+\`\`\`yaml
+- type: navigate
+  value: /login
+  # OR with full URL
+- type: navigate
+  value: https://example.com/page
+\`\`\`
+
+#### \`scroll\`
+Scroll the page or a specific element.
+
+\`\`\`yaml
+# Scroll page down
+- type: scroll
+  direction: down
+  amount: 500
+
+# Scroll to element
+- type: scroll
+  target: { testId: footer }
+
+# Scroll up
+- type: scroll
+  direction: up
+  amount: 300
+\`\`\`
+
+#### \`screenshot\`
+Take a screenshot for debugging or documentation.
+
+\`\`\`yaml
+- type: screenshot
+  name: homepage.png
+  waitBefore: 500  # Wait for visual stability (ms)
+\`\`\`
+
+### Element Interaction Actions
+
+#### \`tap\`
+Click or tap on an element.
+
+\`\`\`yaml
+- type: tap
+  target: { testId: submit-button }
+\`\`\`
+
+#### \`input\`
+Type text into an input field. Clears existing content first.
+
+\`\`\`yaml
+- type: input
+  target: { testId: email }
+  value: user@example.com
+
+# With variable interpolation
+- type: input
+  target: { testId: email }
+  value: \${EMAIL}
+
+# With built-in generators
+- type: input
+  target: { testId: username }
+  value: "{{randomUsername}}"
+\`\`\`
+
+#### \`clear\`
+Clear the contents of an input field.
+
+\`\`\`yaml
+- type: clear
+  target: { testId: search-input }
+\`\`\`
+
+#### \`hover\`
+Hover over an element (useful for dropdowns, tooltips).
+
+\`\`\`yaml
+- type: hover
+  target: { testId: user-menu }
+\`\`\`
+
+#### \`select\`
+Select an option from a dropdown/select element.
+
+\`\`\`yaml
+- type: select
+  target: { testId: country }
+  value: United States
+
+# By option value
+- type: select
+  target: { testId: country }
+  value: US
+\`\`\`
+
+#### \`check\`
+Check a checkbox.
+
+\`\`\`yaml
+- type: check
+  target: { testId: terms-checkbox }
+\`\`\`
+
+#### \`uncheck\`
+Uncheck a checkbox.
+
+\`\`\`yaml
+- type: uncheck
+  target: { testId: newsletter-checkbox }
+\`\`\`
+
+#### \`focus\`
+Focus an element.
+
+\`\`\`yaml
+- type: focus
+  target: { testId: search-input }
+\`\`\`
+
+#### \`press\`
+Press a keyboard key.
+
+\`\`\`yaml
+# Press Enter
+- type: press
+  key: Enter
+
+# Press on specific element
+- type: press
+  target: { testId: search-input }
+  key: Escape
+
+# Common keys: Enter, Tab, Escape, ArrowDown, ArrowUp, Backspace, Delete
+\`\`\`
+
+### Assertion Actions
+
+#### \`assert\`
+Assert that an element exists or contains expected text.
+
+\`\`\`yaml
+# Assert element exists
+- type: assert
+  target: { testId: success-message }
+
+# Assert element contains text
+- type: assert
+  target: { testId: welcome-text }
+  value: Welcome back
+
+# Assert specific text is visible
+- type: assert
+  target: { text: "Login successful" }
+\`\`\`
+
+### Wait Actions
+
+#### \`wait\`
+Wait for an element to appear or for a timeout.
+
+\`\`\`yaml
+# Wait for element
+- type: wait
+  target: { testId: loading-spinner }
+
+# Wait with timeout
+- type: wait
+  target: { text: "Data loaded" }
+  timeout: 10000
+
+# Wait fixed time (use sparingly)
+- type: wait
+  timeout: 2000
+\`\`\`
+
+#### \`waitForSelector\`
+Wait for an element to reach a specific state.
+
+\`\`\`yaml
+# Wait for element to be visible
+- type: waitForSelector
+  target: { testId: modal }
+  state: visible
+  timeout: 5000
+
+# Wait for element to be hidden
+- type: waitForSelector
+  target: { testId: loading }
+  state: hidden
+
+# States: visible, hidden, attached, detached, enabled, disabled
+\`\`\`
+
+### Variable Actions
+
+#### \`setVar\`
+Set a variable for use in later steps.
+
+\`\`\`yaml
+# Set static value
+- type: setVar
+  name: USER_ID
+  value: "12345"
+
+# Set with built-in generator
+- type: setVar
+  name: EMAIL
+  value: "{{randomEmail}}"
+
+# Set with interpolation
+- type: setVar
+  name: FULL_NAME
+  value: "\${FIRST_NAME} \${LAST_NAME}"
+\`\`\`
+
+### Conditional Actions
+
+#### \`conditional\`
+Execute steps conditionally based on element state.
+
+\`\`\`yaml
+- type: conditional
+  condition:
+    type: visible  # exists, notExists, visible, hidden
+    target: { testId: cookie-banner }
+  then:
+    - type: tap
+      target: { testId: accept-cookies }
+  else:
+    - type: navigate
+      value: /next-page
+\`\`\`
+
+#### \`waitForBranch\`
+Wait for an element and branch based on whether it appears or times out.
+
+\`\`\`yaml
+- type: waitForBranch
+  target: { testId: success-message }
+  timeout: 10000
+  state: visible
+  pollInterval: 100
+  onAppear:
+    - type: tap
+      target: { testId: continue }
+  onTimeout:
+    - type: tap
+      target: { testId: retry }
+\`\`\`
+
+### Email Testing Actions
+
+#### \`email.waitFor\`
+Wait for an email to arrive.
+
+\`\`\`yaml
+- type: email.waitFor
+  mailbox: test@test.local
+  timeout: 30000
+  subjectContains: "Verification"
+\`\`\`
+
+#### \`email.extractCode\`
+Extract a verification code from the last email.
+
+\`\`\`yaml
+- type: email.extractCode
+  saveTo: VERIFICATION_CODE
+  pattern: "\\\\d{6}"  # Optional regex pattern
+\`\`\`
+
+#### \`email.extractLink\`
+Extract a link from the last email.
+
+\`\`\`yaml
+- type: email.extractLink
+  saveTo: VERIFY_LINK
+  pattern: "verify.*token="  # Optional pattern to match
+\`\`\`
+
+#### \`email.clear\`
+Clear all emails from a mailbox.
+
+\`\`\`yaml
+- type: email.clear
+  mailbox: test@test.local
+\`\`\`
+
+### Appwrite Integration
+
+#### \`appwrite.verifyEmail\`
+Directly verify a user's email via Appwrite API (bypasses email verification flow).
+
+\`\`\`yaml
+- type: appwrite.verifyEmail
+\`\`\`
+
+### Debugging Actions
+
+#### \`debug\`
+Pause execution and open Playwright Inspector.
+
+\`\`\`yaml
+- type: debug
+\`\`\`
+
+#### \`fail\`
+Explicitly fail the test with a custom message.
+
+\`\`\`yaml
+- type: fail
+  message: "This feature is not implemented yet"
+\`\`\`
+
+---
+
+## Target Selectors
+
+Targets define how to locate elements. Use these properties in any \`target\` field:
+
+### \`testId\` (Recommended)
+Uses the \`data-testid\` attribute. Most reliable and maintainable.
+
+\`\`\`yaml
+target:
+  testId: submit-button
+\`\`\`
+
+### \`text\`
+Find element by visible text content.
+
+\`\`\`yaml
+target:
+  text: "Sign In"
+\`\`\`
+
+### \`role\`
+Find by ARIA role with optional accessible name.
+
+\`\`\`yaml
+target:
+  role: button
+  name: Submit
+
+# Common roles: button, link, textbox, checkbox, radio, combobox, heading, alert
+\`\`\`
+
+### \`css\`
+CSS selector (use sparingly - can be fragile).
+
+\`\`\`yaml
+target:
+  css: ".btn-primary"
+
+# More specific CSS
+target:
+  css: "form#login button[type=submit]"
+\`\`\`
+
+### \`xpath\`
+XPath selector (use sparingly - can be fragile).
+
+\`\`\`yaml
+target:
+  xpath: "//button[@type='submit']"
+\`\`\`
+
+### \`description\`
+AI-friendly description for self-healing tests.
+
+\`\`\`yaml
+target:
+  description: "The blue submit button at the bottom of the login form"
+\`\`\`
+
+### Combining Selectors
+
+You can combine selectors for more precise targeting:
+
+\`\`\`yaml
+target:
+  role: button
+  name: Submit
+
+target:
+  testId: modal
+  text: Confirm
+\`\`\`
+
+---
+
+## Variables & Interpolation
+
+### Defining Variables
+
+Variables can be defined at the test or workflow level:
+
+\`\`\`yaml
+name: My Test
+platform: web
+variables:
+  EMAIL: test@example.com
+  PASSWORD: secret123
+steps:
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+\`\`\`
+
+### Using Variables
+
+Reference variables with \`\${VARIABLE_NAME}\` syntax:
+
+\`\`\`yaml
+- type: input
+  target: { testId: email }
+  value: \${EMAIL}
+
+- type: navigate
+  value: /users/\${USER_ID}/profile
+\`\`\`
+
+### Built-in Generators
+
+Use \`{{generator}}\` syntax for dynamic values:
+
+| Generator | Description | Example Output |
+|-----------|-------------|----------------|
+| \`{{uuid}}\` | Short UUID (first segment) | \`a1b2c3d4\` |
+| \`{{randomUsername}}\` | Random username | \`HappyTiger42\` |
+| \`{{randomEmail}}\` | Random test email | \`test-abc123@test.local\` |
+| \`{{randomEmail:domain}}\` | Email with custom domain | \`test-xyz@example.com\` |
+| \`{{randomPhone}}\` | Random US phone (E.164) | \`+12025551234\` |
+| \`{{randomPhone:GB}}\` | Phone for country code | \`+447911123456\` |
+| \`{{randomPhoto}}\` | Random photo URL (500x500) | \`https://picsum.photos/500/500?random=123\` |
+| \`{{randomPhoto:200x300}}\` | Custom dimensions | \`https://picsum.photos/200/300?random=456\` |
+| \`{{fillerText}}\` | Lorem ipsum (~50 words) | \`Lorem ipsum dolor sit amet...\` |
+| \`{{fillerText:100}}\` | Filler with N words | \`Lorem ipsum... (100 words)\` |
+
+\`\`\`yaml
+variables:
+  EMAIL: "{{randomEmail}}"
+  USERNAME: "{{randomUsername}}"
+steps:
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+\`\`\`
+
+---
+
+## Best Practices for AI Test Generation
+
+### 1. Prefer \`testId\` Over CSS/XPath
+
+\`\`\`yaml
+# Good - stable, semantic
+target:
+  testId: login-button
+
+# Avoid - fragile, breaks easily
+target:
+  css: "div.container > form > button:nth-child(3)"
+\`\`\`
+
+### 2. Use Descriptive Step Names (via comments)
+
+\`\`\`yaml
+steps:
+  # Navigate to login page
+  - type: navigate
+    value: /login
+
+  # Enter user credentials
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+\`\`\`
+
+### 3. Group Related Actions
+
+Keep related actions together for readability:
+
+\`\`\`yaml
+steps:
+  # Login form
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+  - type: input
+    target: { testId: password }
+    value: \${PASSWORD}
+  - type: tap
+    target: { testId: submit }
+
+  # Verify successful login
+  - type: wait
+    target: { testId: dashboard }
+  - type: assert
+    target: { text: Welcome }
+\`\`\`
+
+### 4. Handle Loading States with Wait
+
+Always wait for elements before interacting:
+
+\`\`\`yaml
+# Wait for page to load
+- type: wait
+  target: { testId: main-content }
+
+# Then interact
+- type: tap
+  target: { testId: action-button }
+\`\`\`
+
+### 5. Use Conditional for Dynamic UI
+
+\`\`\`yaml
+# Handle optional dialogs
+- type: conditional
+  condition:
+    type: visible
+    target: { testId: cookie-consent }
+  then:
+    - type: tap
+      target: { testId: accept-cookies }
+\`\`\`
+
+### 6. Use Variables for Reusability
+
+\`\`\`yaml
+variables:
+  BASE_EMAIL: "{{randomEmail}}"
+  PASSWORD: "TestPassword123!"
+steps:
+  - type: input
+    target: { testId: email }
+    value: \${BASE_EMAIL}
+  - type: input
+    target: { testId: password }
+    value: \${PASSWORD}
+\`\`\`
+
+### 7. Prefer Role Selectors for Accessibility
+
+\`\`\`yaml
+# Good - works with screen readers
+target:
+  role: button
+  name: Submit
+
+# Also good
+target:
+  role: textbox
+  name: Email address
+\`\`\`
+
+### 8. Use Workflows for Multi-Step Flows
+
+Instead of one giant test, split into logical workflow:
+
+\`\`\`yaml
+# user-flow.workflow.yaml
+tests:
+  - file: ./register.test.yaml
+    id: register
+  - file: ./login.test.yaml
+    id: login
+    variables:
+      EMAIL: \${register.EMAIL}
+  - file: ./dashboard.test.yaml
+\`\`\`
+
+### 9. Clean Up Test Data
+
+Use resource tracking for cleanup:
+
+\`\`\`yaml
+config:
+  appwrite:
+    cleanup: true
+    cleanupOnFailure: true
+\`\`\`
+
+### 10. Add Strategic Screenshots
+
+\`\`\`yaml
+# Before critical actions
+- type: screenshot
+  name: before-submit.png
+
+- type: tap
+  target: { testId: submit }
+
+# After critical actions
+- type: screenshot
+  name: after-submit.png
+\`\`\`
+
+---
+
+## Configuration Reference
+
+### Test Config
+
+\`\`\`yaml
+config:
+  defaults:
+    timeout: 30000
+    screenshots: on-failure  # on-failure, always, never
+
+  web:
+    baseUrl: http://localhost:3000
+    browser: chromium  # chromium, firefox, webkit
+    headless: true
+
+  email:
+    provider: inbucket
+    endpoint: http://localhost:9000
+
+  appwrite:
+    endpoint: https://cloud.appwrite.io/v1
+    projectId: \${APPWRITE_PROJECT_ID}
+    apiKey: \${APPWRITE_API_KEY}
+    cleanup: true
+    cleanupOnFailure: true
+\`\`\`
+
+### Workflow/Pipeline Config
+
+\`\`\`yaml
+config:
+  web:
+    baseUrl: http://localhost:3000
+
+  webServer:
+    command: npm run dev
+    url: http://localhost:3000
+    reuseExistingServer: true
+    timeout: 30000
+
+  cleanup:
+    provider: appwrite
+    parallel: false
+    retries: 3
+\`\`\`
+
+---
+
+## Common Patterns
+
+### Login Flow
+
+\`\`\`yaml
+name: Login Test
+platform: web
+variables:
+  EMAIL: user@example.com
+  PASSWORD: password123
+steps:
+  - type: navigate
+    value: /login
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+  - type: input
+    target: { testId: password }
+    value: \${PASSWORD}
+  - type: tap
+    target: { testId: submit }
+  - type: wait
+    target: { testId: dashboard }
+  - type: assert
+    target: { text: Welcome }
+\`\`\`
+
+### Form Submission
+
+\`\`\`yaml
+name: Contact Form
+platform: web
+variables:
+  NAME: "{{randomUsername}}"
+  EMAIL: "{{randomEmail}}"
+  MESSAGE: "{{fillerText:50}}"
+steps:
+  - type: navigate
+    value: /contact
+  - type: input
+    target: { testId: name }
+    value: \${NAME}
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+  - type: input
+    target: { testId: message }
+    value: \${MESSAGE}
+  - type: tap
+    target: { testId: submit }
+  - type: assert
+    target: { text: "Thank you" }
+\`\`\`
+
+### Email Verification Flow
+
+\`\`\`yaml
+name: Email Verification
+platform: web
+config:
+  email:
+    provider: inbucket
+    endpoint: http://localhost:9000
+variables:
+  EMAIL: "{{randomEmail:test.local}}"
+steps:
+  - type: navigate
+    value: /signup
+  - type: input
+    target: { testId: email }
+    value: \${EMAIL}
+  - type: tap
+    target: { testId: submit }
+
+  # Wait for verification email
+  - type: email.waitFor
+    mailbox: \${EMAIL}
+    timeout: 30000
+    subjectContains: Verify
+
+  # Extract verification link
+  - type: email.extractLink
+    saveTo: VERIFY_LINK
+    pattern: verify
+
+  # Click verification link
+  - type: navigate
+    value: \${VERIFY_LINK}
+
+  - type: assert
+    target: { text: "Email verified" }
+\`\`\`
+
+### Modal Interaction
+
+\`\`\`yaml
+steps:
+  - type: tap
+    target: { testId: open-modal }
+  - type: wait
+    target: { testId: modal }
+  - type: input
+    target: { testId: modal-input }
+    value: test value
+  - type: tap
+    target: { testId: modal-confirm }
+  - type: waitForSelector
+    target: { testId: modal }
+    state: hidden
+\`\`\`
+
+### Search and Filter
+
+\`\`\`yaml
+steps:
+  - type: navigate
+    value: /products
+  - type: input
+    target: { testId: search }
+    value: laptop
+  - type: press
+    key: Enter
+  - type: wait
+    target: { testId: results }
+  - type: assert
+    target: { testId: result-count }
+    value: "results"
+  - type: tap
+    target: { testId: filter-price }
+  - type: select
+    target: { testId: price-range }
+    value: "100-500"
+\`\`\`
+
+---
+
+Generated by IntelliTester v1.0.0
+`;
+};
+
+const guideCommand = async (): Promise<void> => {
+  const guidePath = path.resolve(GUIDE_FILENAME);
+  const content = generateGuideContent();
+  await fs.writeFile(guidePath, content, 'utf8');
+  console.log(`Created ${GUIDE_FILENAME} in current directory`);
+  console.log('This guide helps AI assistants write effective IntelliTester tests.');
 };
 
 const initCommand = async (): Promise<void> => {
@@ -786,6 +1673,20 @@ const main = async (): Promise<void> => {
     .action(async () => {
       try {
         await initCommand();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logError(message);
+        process.exitCode = 1;
+      }
+    });
+
+  program
+    .command('guide')
+    .alias('init-guide')
+    .description('Generate intellitester_guide.md for AI assistants')
+    .action(async () => {
+      try {
+        await guideCommand();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logError(message);

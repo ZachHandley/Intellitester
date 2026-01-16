@@ -12,6 +12,10 @@ const trackableSchema = z.object({
   track: trackSchema.optional(),
 });
 
+// Error condition for immediate failure (no waiting)
+export const errorIfSchema = z.enum(['not-found', 'not-visible', 'disabled', 'empty'])
+  .describe('Fail immediately if this condition is met (no waiting)');
+
 export const LocatorSchema = z
   .object({
     description: z.string().trim().optional().describe('AI-friendly description of the element to find'),
@@ -45,55 +49,65 @@ const navigateActionSchema = z.object({
 const tapActionSchema = z.object({
   type: z.literal('tap'),
   target: LocatorSchema,
+  errorIf: errorIfSchema.optional(),
 }).describe('Click or tap on an element');
 
 const inputActionSchema = z.object({
   type: z.literal('input'),
   target: LocatorSchema,
   value: z.string().describe('Text to input (can reference variables with ${VAR_NAME})'),
+  errorIf: errorIfSchema.optional(),
 }).describe('Input text into a field');
 
 const clearActionSchema = z.object({
   type: z.literal('clear'),
   target: LocatorSchema,
+  errorIf: errorIfSchema.optional(),
 }).describe('Clear the contents of an input field');
 
 const hoverActionSchema = z.object({
   type: z.literal('hover'),
   target: LocatorSchema,
+  errorIf: errorIfSchema.optional(),
 }).describe('Hover over an element');
 
 const selectActionSchema = z.object({
   type: z.literal('select'),
   target: LocatorSchema,
   value: z.string().describe('Option value, label, or index to select'),
+  errorIf: errorIfSchema.optional(),
 }).describe('Select an option from a dropdown');
 
 const checkActionSchema = z.object({
   type: z.literal('check'),
   target: LocatorSchema,
+  errorIf: errorIfSchema.optional(),
 }).describe('Check a checkbox');
 
 const uncheckActionSchema = z.object({
   type: z.literal('uncheck'),
   target: LocatorSchema,
+  errorIf: errorIfSchema.optional(),
 }).describe('Uncheck a checkbox');
 
 const pressActionSchema = z.object({
   type: z.literal('press'),
   key: nonEmptyString.describe('Key to press (e.g., Enter, Tab, Escape, ArrowDown)'),
   target: LocatorSchema.optional().describe('Element to focus before pressing key'),
+  errorIf: errorIfSchema.optional(),
 }).describe('Press a keyboard key');
 
 const focusActionSchema = z.object({
   type: z.literal('focus'),
   target: LocatorSchema,
+  errorIf: errorIfSchema.optional(),
 }).describe('Focus an element');
 
 const assertActionSchema = z.object({
   type: z.literal('assert'),
   target: LocatorSchema,
   value: z.string().optional().describe('Expected text content'),
+  errorIf: errorIfSchema.optional(),
 }).describe('Assert that an element exists or contains expected text');
 
 const waitActionSchema = z
@@ -101,6 +115,7 @@ const waitActionSchema = z
     type: z.literal('wait'),
     target: LocatorSchema.optional().describe('Element to wait for'),
     timeout: z.number().int().positive().optional().describe('Time to wait in milliseconds'),
+    errorIf: errorIfSchema.optional(),
   })
   .describe('Wait for an element or timeout')
   .refine((action) => action.target || action.timeout, {
@@ -112,6 +127,7 @@ const scrollActionSchema = z.object({
   target: LocatorSchema.optional().describe('Element to scroll'),
   direction: z.enum(['up', 'down']).optional().describe('Direction to scroll'),
   amount: z.number().int().positive().optional().describe('Amount to scroll in pixels'),
+  errorIf: errorIfSchema.optional(),
 }).describe('Scroll the page or an element');
 
 const screenshotActionSchema = z.object({
@@ -168,6 +184,7 @@ const waitForSelectorActionSchema = z.object({
     .describe('Element state to wait for'),
   timeout: z.number().int().positive().optional()
     .describe('Time to wait in milliseconds'),
+  errorIf: errorIfSchema.optional(),
 }).describe('Wait for an element to reach a specific state');
 
 const failActionSchema = z.object({

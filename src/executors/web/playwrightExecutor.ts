@@ -13,7 +13,7 @@ import {
 } from 'playwright';
 import prompts from 'prompts';
 
-import type { Action, Locator, TestDefinition } from '../../core/types';
+import type { Action, Locator, TestDefinition, ErrorIf } from '../../core/types';
 import { interpolateVariables } from '../../core/interpolation';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
@@ -95,7 +95,12 @@ const resolveUrl = (value: string, baseUrl?: string): string => {
 };
 
 const resolveLocator = (page: Page, locator: Locator): PWLocator => {
-  if (locator.testId) return page.getByTestId(locator.testId);
+  if (locator.testId) {
+    // Try data-testid first (Playwright default), then fallback to id, then class
+    return page.locator(
+      `[data-testid="${locator.testId}"], #${CSS.escape(locator.testId)}, .${CSS.escape(locator.testId)}`
+    ).first();
+  }
   if (locator.text) return page.getByText(locator.text);
   if (locator.css) return page.locator(locator.css);
   if (locator.xpath) return page.locator(`xpath=${locator.xpath}`);
@@ -107,6 +112,64 @@ const resolveLocator = (page: Page, locator: Locator): PWLocator => {
   }
   if (locator.description) return page.getByText(locator.description);
   throw new Error('No usable selector found for locator');
+};
+
+/**
+ * Check if errorIf condition is met and throw immediately if so.
+ * This check is quick (no waiting) - if condition is met, throws immediately.
+ */
+const checkErrorIf = async (
+  page: Page,
+  locator: Locator,
+  errorIf: ErrorIf | undefined,
+): Promise<void> => {
+  if (!errorIf) return;
+
+  const handle = resolveLocator(page, locator);
+
+  switch (errorIf) {
+    case 'not-found': {
+      // Check if element exists in DOM right now (no waiting)
+      const count = await handle.count();
+      if (count === 0) {
+        throw new Error(`errorIf: Element not found in DOM (testId/selector: ${JSON.stringify(locator)})`);
+      }
+      break;
+    }
+    case 'not-visible': {
+      // Check if element exists but is not visible
+      const count = await handle.count();
+      if (count > 0) {
+        const isVisible = await handle.isVisible();
+        if (!isVisible) {
+          throw new Error(`errorIf: Element exists but is not visible (testId/selector: ${JSON.stringify(locator)})`);
+        }
+      }
+      break;
+    }
+    case 'disabled': {
+      // Check if element is disabled
+      const count = await handle.count();
+      if (count > 0) {
+        const isDisabled = await handle.isDisabled();
+        if (isDisabled) {
+          throw new Error(`errorIf: Element is disabled (testId/selector: ${JSON.stringify(locator)})`);
+        }
+      }
+      break;
+    }
+    case 'empty': {
+      // Check if element has no text content
+      const count = await handle.count();
+      if (count > 0) {
+        const text = await handle.textContent();
+        if (!text || text.trim() === '') {
+          throw new Error(`errorIf: Element has no text content (testId/selector: ${JSON.stringify(locator)})`);
+        }
+      }
+      break;
+    }
+  }
 };
 
 async function ensureScreenshotDir(dir: string): Promise<void> {
@@ -544,6 +607,7 @@ async function executeActionWithRetry(
           if (debugMode) {
             console.log(`[DEBUG] Tapping element:`, action.target);
           }
+          await checkErrorIf(page, action.target, action.errorIf);
           await runTap(page, action.target);
           break;
         }
@@ -553,17 +617,20 @@ async function executeActionWithRetry(
             console.log(`[DEBUG] Inputting value into element:`, action.target);
             console.log(`[DEBUG] Value: ${interpolated}`);
           }
+          await checkErrorIf(page, action.target, action.errorIf);
           await runInput(page, action.target, action.value, context);
           break;
         }
         case 'clear': {
           if (debugMode) console.log(`[DEBUG] Clearing element:`, action.target);
+          await checkErrorIf(page, action.target, action.errorIf);
           const handle = resolveLocator(page, action.target);
           await handle.clear();
           break;
         }
         case 'hover': {
           if (debugMode) console.log(`[DEBUG] Hovering element:`, action.target);
+          await checkErrorIf(page, action.target, action.errorIf);
           const handle = resolveLocator(page, action.target);
           await handle.hover();
           break;
@@ -571,18 +638,21 @@ async function executeActionWithRetry(
         case 'select': {
           const interpolated = interpolateVariables(action.value, context.variables);
           if (debugMode) console.log(`[DEBUG] Selecting: ${interpolated}`);
+          await checkErrorIf(page, action.target, action.errorIf);
           const handle = resolveLocator(page, action.target);
           await handle.selectOption(interpolated);
           break;
         }
         case 'check': {
           if (debugMode) console.log(`[DEBUG] Checking:`, action.target);
+          await checkErrorIf(page, action.target, action.errorIf);
           const handle = resolveLocator(page, action.target);
           await handle.check();
           break;
         }
         case 'uncheck': {
           if (debugMode) console.log(`[DEBUG] Unchecking:`, action.target);
+          await checkErrorIf(page, action.target, action.errorIf);
           const handle = resolveLocator(page, action.target);
           await handle.uncheck();
           break;
@@ -590,6 +660,7 @@ async function executeActionWithRetry(
         case 'press': {
           if (debugMode) console.log(`[DEBUG] Pressing key: ${action.key}`);
           if (action.target) {
+            await checkErrorIf(page, action.target, action.errorIf);
             const handle = resolveLocator(page, action.target);
             await handle.press(action.key);
           } else {
@@ -599,6 +670,7 @@ async function executeActionWithRetry(
         }
         case 'focus': {
           if (debugMode) console.log(`[DEBUG] Focusing:`, action.target);
+          await checkErrorIf(page, action.target, action.errorIf);
           const handle = resolveLocator(page, action.target);
           await handle.focus();
           break;
@@ -611,13 +683,20 @@ async function executeActionWithRetry(
               console.log(`[DEBUG] Expected text contains: ${interpolated}`);
             }
           }
+          await checkErrorIf(page, action.target, action.errorIf);
           await runAssert(page, action.target, action.value, context);
           break;
         }
         case 'wait':
+          if (action.target && action.errorIf) {
+            await checkErrorIf(page, action.target, action.errorIf);
+          }
           await runWait(page, action);
           break;
         case 'scroll':
+          if (action.target && action.errorIf) {
+            await checkErrorIf(page, action.target, action.errorIf);
+          }
           await runScroll(page, action);
           break;
         case 'screenshot':
@@ -715,6 +794,9 @@ async function executeActionWithRetry(
         }
         case 'waitForSelector': {
           const wsAction = action as Extract<Action, { type: 'waitForSelector' }>;
+          if (wsAction.errorIf) {
+            await checkErrorIf(page, wsAction.target, wsAction.errorIf);
+          }
           const handle = resolveLocator(page, wsAction.target);
           const timeout = wsAction.timeout ?? 30000;
 

@@ -6,6 +6,7 @@ import {
   LocatorSchema,
   TestConfigSchema,
   TestDefinitionSchema,
+  errorIfSchema,
 } from './schema';
 import type {
   WorkflowDefinitionSchema,
@@ -18,6 +19,7 @@ export type TestDefinition = z.infer<typeof TestDefinitionSchema>;
 export type IntellitesterConfig = z.infer<typeof IntellitesterConfigSchema>;
 export type WebServer = NonNullable<IntellitesterConfig['webServer']>;
 export type PreviewConfig = NonNullable<IntellitesterConfig['preview']>;
+export type ErrorIf = z.infer<typeof errorIfSchema>;
 
 // Workflow types are exported from workflowSchema.ts
 export type WorkflowDefinition = z.infer<typeof WorkflowDefinitionSchema>;

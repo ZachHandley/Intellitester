@@ -263,6 +263,11 @@
                 },
                 "additionalProperties": false
               },
+              "errorIf": {
+                "description": "Fail immediately if this condition is met (no waiting)",
+                "type": "string",
+                "enum": ["not-found", "not-visible", "disabled", "empty"]
+              },
               "track": {
                 "type": "object",
                 "description": "Optional tracking metadata for cleanup",
@@ -340,6 +345,11 @@
               "value": {
                 "description": "Text to input (can reference variables with ${VAR_NAME})",
                 "type": "string"
+              },
+              "errorIf": {
+                "description": "Fail immediately if this condition is met (no waiting)",
+                "type": "string",
+                "enum": ["not-found", "not-visible", "disabled", "empty"]
               },
               "track": {
                 "type": "object",
@@ -420,6 +430,11 @@
                 "description": "Expected text content",
                 "type": "string"
               },
+              "errorIf": {
+                "description": "Fail immediately if this condition is met (no waiting)",
+                "type": "string",
+                "enum": ["not-found", "not-visible", "disabled", "empty"]
+              },
               "track": {
                 "type": "object",
                 "description": "Optional tracking metadata for cleanup",
@@ -499,6 +514,11 @@
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991
+              },
+              "errorIf": {
+                "description": "Fail immediately if this condition is met (no waiting)",
+                "type": "string",
+                "enum": ["not-found", "not-visible", "disabled", "empty"]
               },
               "track": {
                 "type": "object",
@@ -587,6 +607,11 @@
                 "type": "integer",
                 "exclusiveMinimum": 0,
                 "maximum": 9007199254740991
+              },
+              "errorIf": {
+                "description": "Fail immediately if this condition is met (no waiting)",
+                "type": "string",
+                "enum": ["not-found", "not-visible", "disabled", "empty"]
               },
               "track": {
                 "type": "object",

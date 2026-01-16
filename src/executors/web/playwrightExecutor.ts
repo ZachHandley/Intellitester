@@ -40,7 +40,8 @@ export interface WebServerConfig {
   port?: number;
   reuseExistingServer?: boolean;
   timeout?: number;
-  cwd?: string;
+  workdir?: string;
+  cwd?: string; // Deprecated: use workdir instead
 }
 
 export interface WebRunOptions {
@@ -437,7 +438,8 @@ async function detectServerCommand(cwd: string): Promise<string> {
 }
 
 export async function startWebServer(config: WebServerConfig): Promise<ChildProcess | null> {
-  const { url, reuseExistingServer = true, timeout = 30000, cwd = process.cwd() } = config;
+  const { url, reuseExistingServer = true, timeout = 30000 } = config;
+  const cwd = config.workdir ?? config.cwd ?? process.cwd();
 
   // Check if already running
   if (reuseExistingServer && await isServerRunning(url)) {

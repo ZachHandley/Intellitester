@@ -1267,7 +1267,7 @@ export async function runWorkflow(
       }
       serverProcess = await startWebServer({
         ...effectiveWebServerConfig,
-        cwd: serverCwd,
+        cwd: effectiveWebServerConfig.workdir ?? effectiveWebServerConfig.cwd ?? serverCwd,
       });
     } catch (error) {
       console.error('Failed to start web server:', error);

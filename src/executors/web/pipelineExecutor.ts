@@ -245,7 +245,7 @@ export async function runPipeline(
       }
       serverProcess = await startWebServer({
         ...effectiveWebServerConfig,
-        cwd: pipelineDir,
+        cwd: effectiveWebServerConfig.workdir ?? effectiveWebServerConfig.cwd ?? pipelineDir,
       });
     } catch (error) {
       console.error('Failed to start web server:', error);

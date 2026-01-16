@@ -50,6 +50,8 @@ const workflowWebServerSchema = z.object({
   url: nonEmptyString.url().describe('URL to wait for before starting tests'),
   reuseExistingServer: z.boolean().default(true).describe('Use existing server if already running at the URL'),
   timeout: z.number().int().positive().default(30000).describe('Timeout in milliseconds to wait for server to start'),
+  workdir: nonEmptyString.optional().describe('Working directory for the web server command'),
+  cwd: nonEmptyString.optional().describe('Deprecated: use workdir instead'),
 }).describe('Configuration for starting a web server before tests');
 
 // Workflow configuration

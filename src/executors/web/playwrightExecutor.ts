@@ -40,6 +40,7 @@ export interface WebServerConfig {
   port?: number;
   reuseExistingServer?: boolean;
   timeout?: number;
+  idleTimeout?: number; // ms before failing if no output (default: 20000)
   workdir?: string;
   cwd?: string; // Deprecated: use workdir instead
 }
@@ -438,7 +439,7 @@ async function detectServerCommand(cwd: string): Promise<string> {
 }
 
 export async function startWebServer(config: WebServerConfig): Promise<ChildProcess | null> {
-  const { url, reuseExistingServer = true, timeout = 30000 } = config;
+  const { url, reuseExistingServer = true, timeout = 30000, idleTimeout = 20000 } = config;
   const cwd = config.workdir ?? config.cwd ?? process.cwd();
 
   // Check if already running
@@ -472,17 +473,74 @@ export async function startWebServer(config: WebServerConfig): Promise<ChildProc
     detached: false,
   });
 
+  let stderrOutput = '';
+  let lastOutputTime = Date.now();
+
   serverProcess.stdout?.on('data', (data) => {
+    lastOutputTime = Date.now();
     process.stdout.write(`[server] ${data}`);
   });
 
   serverProcess.stderr?.on('data', (data) => {
+    lastOutputTime = Date.now();
+    stderrOutput += data.toString();
     process.stderr.write(`[server] ${data}`);
   });
 
-  await waitForServer(url, timeout);
-  console.log(`Server ready at ${url}`);
+  // Race between: server ready vs. process exit vs. timeout vs. idle timeout
+  await new Promise<void>((resolve, reject) => {
+    let resolved = false;
+    const startTime = Date.now();
 
+    const cleanup = () => {
+      resolved = true;
+      clearInterval(pollInterval);
+    };
+
+    // Handle early process exit
+    serverProcess.on('close', (code) => {
+      if (!resolved && code !== 0 && code !== null) {
+        cleanup();
+        reject(new Error(`Server exited with code ${code}\n${stderrOutput}`));
+      }
+    });
+
+    serverProcess.on('error', (err) => {
+      if (!resolved) {
+        cleanup();
+        reject(err);
+      }
+    });
+
+    // Poll for server readiness, overall timeout, and idle timeout
+    const pollInterval = setInterval(async () => {
+      if (resolved) return;
+
+      // Check if server is ready
+      if (await isServerRunning(url)) {
+        cleanup();
+        resolve();
+        return;
+      }
+
+      // Check overall timeout
+      if (Date.now() - startTime > timeout) {
+        cleanup();
+        reject(new Error(`Server at ${url} not ready after ${timeout}ms`));
+        return;
+      }
+
+      // Check idle timeout (no output for idleTimeout ms)
+      if (Date.now() - lastOutputTime > idleTimeout) {
+        cleanup();
+        serverProcess.kill('SIGTERM');
+        reject(new Error(`Server stalled - no output for ${idleTimeout}ms. Last output:\n${stderrOutput.slice(-500)}`));
+        return;
+      }
+    }, 500);
+  });
+
+  console.log(`Server ready at ${url}`);
   return serverProcess;
 }
 

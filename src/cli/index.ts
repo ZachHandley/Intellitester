@@ -144,7 +144,8 @@ const startPreviewServer = async (
   args: string[],
   cwd: string,
   url: string,
-  timeout: number = 60000
+  timeout: number = 60000,
+  idleTimeout: number = 20000
 ): Promise<ChildProcess> => {
   return new Promise((resolve, reject) => {
     console.log(`Starting preview server: ${cmd} ${args.join(' ')}`);
@@ -155,13 +156,21 @@ const startPreviewServer = async (
     });
 
     let output = '';
+    let resolved = false;
     const startTime = Date.now();
+    let lastOutputTime = Date.now();
+
+    const cleanup = () => {
+      resolved = true;
+      clearInterval(pollInterval);
+    };
 
     const checkServer = async () => {
       try {
         const response = await fetch(url, { method: 'HEAD' });
         if (response.ok || response.status < 500) {
           console.log(`Preview server ready at ${url}`);
+          cleanup();
           resolve(child);
           return true;
         }
@@ -171,35 +180,53 @@ const startPreviewServer = async (
       return false;
     };
 
-    // Poll for server readiness
+    // Poll for server readiness, overall timeout, and idle timeout
     const pollInterval = setInterval(async () => {
+      if (resolved) return;
+
       if (await checkServer()) {
-        clearInterval(pollInterval);
-      } else if (Date.now() - startTime > timeout) {
-        clearInterval(pollInterval);
+        return;
+      }
+
+      // Check overall timeout
+      if (Date.now() - startTime > timeout) {
+        cleanup();
         child.kill();
         reject(new Error(`Preview server failed to start within ${timeout}ms`));
+        return;
+      }
+
+      // Check idle timeout (no output for idleTimeout ms)
+      if (Date.now() - lastOutputTime > idleTimeout) {
+        cleanup();
+        child.kill();
+        reject(new Error(`Preview server stalled - no output for ${idleTimeout}ms. Last output:\n${output.slice(-500)}`));
+        return;
       }
     }, 500);
 
     child.stdout?.on('data', (data) => {
+      lastOutputTime = Date.now();
       output += data.toString();
       process.stdout.write(data);
     });
 
     child.stderr?.on('data', (data) => {
+      lastOutputTime = Date.now();
       output += data.toString();
       process.stderr.write(data);
     });
 
     child.on('error', (err) => {
-      clearInterval(pollInterval);
-      reject(err);
+      if (!resolved) {
+        cleanup();
+        reject(err);
+      }
     });
 
     child.on('close', (code) => {
-      clearInterval(pollInterval);
-      if (code !== 0 && code !== null) {
+      if (!resolved && code !== 0 && code !== null) {
+        cleanup();
         reject(new Error(`Preview server exited with code ${code}\n${output}`));
       }
     });

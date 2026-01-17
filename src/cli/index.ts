@@ -1371,6 +1371,7 @@ const runTestCommand = async (
     debug?: boolean;
     sessionId?: string;
     trackDir?: string;
+    testSizes?: string[];
   },
 ): Promise<void> => {
   const absoluteTarget = path.resolve(target);
@@ -1434,6 +1435,7 @@ const runTestCommand = async (
     aiConfig: interactive ? config?.ai : undefined,
     sessionId: options.sessionId,
     trackDir: options.trackDir,
+    testSizes: options.testSizes as ('xs' | 'sm' | 'md' | 'lg' | 'xl')[] | undefined,
   });
 
   for (const step of result.steps) {
@@ -1530,6 +1532,7 @@ interface RunOptions {
   debug?: boolean;
   sessionId?: string;
   trackDir?: string;
+  testSizes?: string[];
 }
 
 const runWorkflowCommand = async (file: string, options: RunOptions): Promise<void> => {
@@ -1585,6 +1588,7 @@ const runWorkflowCommand = async (file: string, options: RunOptions): Promise<vo
     webServer: config?.webServer,
     sessionId: options.sessionId,
     trackDir: options.trackDir,
+    testSizes: options.testSizes as ('xs' | 'sm' | 'md' | 'lg' | 'xl')[] | undefined,
   });
 
   // Print results
@@ -1661,6 +1665,7 @@ const runPipelineCommand = async (file: string, options: RunOptions): Promise<vo
     debug: options.debug,
     sessionId: options.sessionId,
     trackDir: options.trackDir,
+    testSizes: options.testSizes as ('xs' | 'sm' | 'md' | 'lg' | 'xl')[] | undefined,
   });
 
   // Print results
@@ -1749,6 +1754,7 @@ const main = async (): Promise<void> => {
     .option('--debug', 'Debug mode - verbose logging')
     .option('--session-id <id>', 'Override test session ID (used for tracking/cleanup)')
     .option('--track-dir <path>', 'Directory for tracking files (defaults to .intellitester/track)')
+    .option('--test-sizes <sizes>', 'Viewport sizes to test (xs,sm,md,lg,xl comma-separated)')
     .action(async (file: string | undefined, options: {
       visible?: boolean;
       browser?: string;
@@ -1760,6 +1766,7 @@ const main = async (): Promise<void> => {
       debug?: boolean;
       sessionId?: string;
       trackDir?: string;
+      testSizes?: string;
     }) => {
       let previewCleanup: (() => void) | null = null;
 
@@ -1788,6 +1795,12 @@ const main = async (): Promise<void> => {
           previewCleanup = cleanup;
         }
 
+        // Parse testSizes from comma-separated string
+        const validSizes = ['xs', 'sm', 'md', 'lg', 'xl'];
+        const testSizes = options.testSizes
+          ? options.testSizes.split(',').map(s => s.trim()).filter(s => validSizes.includes(s))
+          : undefined;
+
         const runOpts: RunOptions = {
           visible: options.visible,
           browser,
@@ -1795,6 +1808,7 @@ const main = async (): Promise<void> => {
           debug: options.debug,
           sessionId: options.sessionId,
           trackDir: options.trackDir,
+          testSizes,
         };
 
         // If no file specified, auto-discover tests
@@ -1854,6 +1868,7 @@ const main = async (): Promise<void> => {
                 debug: options.debug,
                 sessionId: options.sessionId,
                 trackDir: options.trackDir,
+                testSizes,
               });
             } catch (error) {
               console.error(`\n❌ Test failed: ${path.basename(test)}`);
@@ -1925,6 +1940,7 @@ const main = async (): Promise<void> => {
                 debug: options.debug,
                 sessionId: options.sessionId,
                 trackDir: options.trackDir,
+                testSizes,
               });
             } catch (error) {
               console.error(`\n❌ Test failed: ${path.basename(test)}`);
@@ -1973,6 +1989,7 @@ const main = async (): Promise<void> => {
           debug: options.debug,
           sessionId: options.sessionId,
           trackDir: options.trackDir,
+          testSizes,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

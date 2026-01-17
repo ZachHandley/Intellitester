@@ -50,6 +50,10 @@ inputs:
     description: 'Force a fresh build (default: skips build if artifacts exist)'
     required: false
     default: 'false'
+  test-sizes:
+    description: 'Viewport sizes to test (xs,sm,md,lg,xl comma-separated)'
+    required: false
+    default: ''
 
 runs:
   using: 'composite'
@@ -277,4 +281,5 @@ runs:
           ${{ inputs.preview == 'true' && '--preview' || '' }} \
           ${{ inputs.prod == 'true' && '--prod' || '' }} \
           ${{ inputs.fresh-build == 'true' && '--fresh-build' || '' }} \
+          ${{ inputs.test-sizes != '' && format('--test-sizes {0}', inputs.test-sizes) || '' }} \
           --browser ${{ inputs.browser }}

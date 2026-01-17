@@ -17,7 +17,7 @@ import { interpolateVariables } from '../../core/interpolation';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import { AppwriteTestClient, createTestContext, APPWRITE_PATTERNS, APPWRITE_UPDATE_PATTERNS, APPWRITE_DELETE_PATTERNS, type TrackedResource } from '../../integrations/appwrite';
-import { getBrowserLaunchOptions } from './browserOptions.js';
+import { getBrowserLaunchOptions, VIEWPORT_SIZES, parseViewportSize, type ViewportSize } from './browserOptions.js';
 import { getAISuggestion } from '../../ai/errorHelper';
 import { TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
 import { track as trackResource } from '../../integration/index.js';
@@ -40,6 +40,8 @@ export interface WebRunOptions {
   aiConfig?: import('../../ai/types').AIConfig;
   sessionId?: string;
   trackDir?: string;
+  /** Viewport sizes to test at. Can be predefined ('xs', 'sm', 'md', 'lg', 'xl') or custom 'WxH' format (e.g., '1920x1080'). */
+  testSizes?: string[];
 }
 
 export interface StepResult {
@@ -175,6 +177,10 @@ const runNavigate = async (
 const runTap = async (page: Page, locator: Locator): Promise<void> => {
   const handle = resolveLocator(page, locator);
   await handle.click();
+  // Wait for network to settle after click (handles 302 redirect cookie timing)
+  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {
+    // Timeout is fine - proceed anyway
+  });
 };
 
 const runInput = async (
@@ -923,371 +929,438 @@ export const runWebTest = async (
   const browser = await getBrowser(browserName).launch(getBrowserLaunchOptions({ headless, browser: browserName }));
   console.log(`Browser launched successfully`);
 
-  const browserContext = await browser.newContext();
-  const page = await browserContext.newPage();
-  page.setDefaultTimeout(defaultTimeout);
-
-  // Initialize execution context with variables
-  const executionContext: ExecutionContext = {
-    variables: new Map<string, string>(),
-    lastEmail: null,
-    emailClient: null,
-    appwriteContext: createTestContext(),
-    appwriteConfig: test.config?.appwrite ? {
-      endpoint: test.config.appwrite.endpoint,
-      projectId: test.config.appwrite.projectId,
-      apiKey: test.config.appwrite.apiKey,
-    } : undefined,
-  };
-
-  // Initialize email client if configured
-  if (test.config?.email) {
-    const emailEndpoint = test.config.email.endpoint ?? process.env.INBUCKET_URL;
-    if (!emailEndpoint) {
-      throw new Error('Email testing requires endpoint in config or INBUCKET_URL env var');
+  // Determine viewport sizes to test
+  const sizesToTest: Array<{ size: string; viewport: { width: number; height: number } }> = [];
+  if (options.testSizes && options.testSizes.length > 0) {
+    for (const size of options.testSizes) {
+      const viewport = parseViewportSize(size);
+      if (!viewport) {
+        throw new Error(
+          `Invalid viewport size: "${size}". Use predefined sizes (xs, sm, md, lg, xl) or "WxH" format (e.g., "1920x1080").`
+        );
+      }
+      sizesToTest.push({ size, viewport });
     }
-    executionContext.emailClient = new InbucketClient({
-      endpoint: emailEndpoint,
-    });
+  } else {
+    // Default: single run at 1920x1080
+    sizesToTest.push({ size: 'default', viewport: { width: 1920, height: 1080 } });
   }
 
-  // Set up network interception for Appwrite API responses
-  page.on('response', async (response) => {
-    const url = response.url();
-    const method = response.request().method();
+  const allResults: StepResult[] = [];
+  let overallFailed = false;
+  let lastExecutionContext: ExecutionContext | null = null;
 
-    try {
-      // Handle POST requests (resource creation)
-      if (method === 'POST') {
-        // User created
-        if (APPWRITE_PATTERNS.userCreate.test(url)) {
-          const data = await response.json();
-          executionContext.appwriteContext.userId = data.$id;
-          executionContext.appwriteContext.userEmail = data.email;
-          return;
-        }
-
-        // Row created
-        const rowMatch = url.match(APPWRITE_PATTERNS.rowCreate);
-        if (rowMatch) {
-          const data = await response.json();
-          executionContext.appwriteContext.resources.push({
-            type: 'row',
-            id: data.$id,
-            databaseId: rowMatch[1],
-            tableId: rowMatch[2],
-            createdAt: new Date().toISOString(),
-          });
-          return;
-        }
-
-        // File created
-        const fileMatch = url.match(APPWRITE_PATTERNS.fileCreate);
-        if (fileMatch) {
-          const data = await response.json();
-          executionContext.appwriteContext.resources.push({
-            type: 'file',
-            id: data.$id,
-            bucketId: fileMatch[1],
-            createdAt: new Date().toISOString(),
-          });
-          return;
-        }
-
-        // Team created
-        const teamMatch = url.match(APPWRITE_PATTERNS.teamCreate);
-        if (teamMatch) {
-          const data = await response.json();
-          executionContext.appwriteContext.resources.push({
-            type: 'team',
-            id: data.$id,
-            createdAt: new Date().toISOString(),
-          });
-          return;
-        }
-
-        // Membership created
-        const membershipMatch = url.match(APPWRITE_PATTERNS.membershipCreate);
-        if (membershipMatch) {
-          const data = await response.json();
-          executionContext.appwriteContext.resources.push({
-            type: 'membership',
-            id: data.$id,
-            teamId: membershipMatch[1],
-            createdAt: new Date().toISOString(),
-          });
-          return;
-        }
-
-        // Message created
-        const messageMatch = url.match(APPWRITE_PATTERNS.messageCreate);
-        if (messageMatch) {
-          const data = await response.json();
-          executionContext.appwriteContext.resources.push({
-            type: 'message',
-            id: data.$id,
-            createdAt: new Date().toISOString(),
-          });
-          return;
-        }
-      }
-
-      // Handle PUT/PATCH requests (resource updates)
-      if (method === 'PUT' || method === 'PATCH') {
-        // Row updated
-        const rowUpdateMatch = url.match(APPWRITE_UPDATE_PATTERNS.rowUpdate);
-        if (rowUpdateMatch) {
-          const resourceId = rowUpdateMatch[3];
-          const existingResource = executionContext.appwriteContext.resources.find(
-            r => r.type === 'row' && r.id === resourceId
-          );
-          if (!existingResource) {
-            // Resource was updated but not created in this test - track it for potential cleanup
-            executionContext.appwriteContext.resources.push({
-              type: 'row',
-              id: resourceId,
-              databaseId: rowUpdateMatch[1],
-              tableId: rowUpdateMatch[2],
-              createdAt: new Date().toISOString(),
-            });
-          }
-          return;
-        }
-
-        // File updated
-        const fileUpdateMatch = url.match(APPWRITE_UPDATE_PATTERNS.fileUpdate);
-        if (fileUpdateMatch) {
-          const resourceId = fileUpdateMatch[2];
-          const existingResource = executionContext.appwriteContext.resources.find(
-            r => r.type === 'file' && r.id === resourceId
-          );
-          if (!existingResource) {
-            // Resource was updated but not created in this test - track it for potential cleanup
-            executionContext.appwriteContext.resources.push({
-              type: 'file',
-              id: resourceId,
-              bucketId: fileUpdateMatch[1],
-              createdAt: new Date().toISOString(),
-            });
-          }
-          return;
-        }
-
-        // Team updated
-        const teamUpdateMatch = url.match(APPWRITE_UPDATE_PATTERNS.teamUpdate);
-        if (teamUpdateMatch) {
-          const resourceId = teamUpdateMatch[1];
-          const existingResource = executionContext.appwriteContext.resources.find(
-            r => r.type === 'team' && r.id === resourceId
-          );
-          if (!existingResource) {
-            // Resource was updated but not created in this test - track it for potential cleanup
-            executionContext.appwriteContext.resources.push({
-              type: 'team',
-              id: resourceId,
-              createdAt: new Date().toISOString(),
-            });
-          }
-          return;
-        }
-      }
-
-      // Handle DELETE requests (mark resources as deleted)
-      if (method === 'DELETE') {
-        // Row deleted
-        const rowDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.rowDelete);
-        if (rowDeleteMatch) {
-          const resourceId = rowDeleteMatch[3];
-          const resource = executionContext.appwriteContext.resources.find(
-            r => r.type === 'row' && r.id === resourceId
-          );
-          if (resource) {
-            resource.deleted = true;
-          }
-          return;
-        }
-
-        // File deleted
-        const fileDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.fileDelete);
-        if (fileDeleteMatch) {
-          const resourceId = fileDeleteMatch[2];
-          const resource = executionContext.appwriteContext.resources.find(
-            r => r.type === 'file' && r.id === resourceId
-          );
-          if (resource) {
-            resource.deleted = true;
-          }
-          return;
-        }
-
-        // Team deleted
-        const teamDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.teamDelete);
-        if (teamDeleteMatch) {
-          const resourceId = teamDeleteMatch[1];
-          const resource = executionContext.appwriteContext.resources.find(
-            r => r.type === 'team' && r.id === resourceId
-          );
-          if (resource) {
-            resource.deleted = true;
-          }
-          return;
-        }
-
-        // Membership deleted
-        const membershipDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.membershipDelete);
-        if (membershipDeleteMatch) {
-          const resourceId = membershipDeleteMatch[2];
-          const resource = executionContext.appwriteContext.resources.find(
-            r => r.type === 'membership' && r.id === resourceId
-          );
-          if (resource) {
-            resource.deleted = true;
-          }
-          return;
-        }
-      }
-    } catch {
-      // Ignore parse errors for non-JSON responses
-    }
-  });
-
-  // Initialize variables from test definition
-  if (test.variables) {
-    for (const [key, value] of Object.entries(test.variables)) {
-      // Interpolate variable values to handle nested {{uuid}}
-      const interpolated = interpolateVariables(value, executionContext.variables);
-      executionContext.variables.set(key, interpolated);
-    }
-  }
-
-  const results: StepResult[] = [];
   const debugMode = options.debug ?? false;
   const interactive = options.interactive ?? false;
-  const buildTrackPayload = (
-    action: Action,
-    index: number,
-    stepExtras?: Record<string, unknown>
-  ): IntegrationTrackedResource | null => {
-    if (!('track' in action)) return null;
-    const track = (action as { track?: Record<string, unknown> }).track;
-    if (!track || typeof track !== 'object') return null;
-    if (typeof track.type !== 'string' || typeof track.id !== 'string') return null;
 
-    const { includeStepContext, ...rest } = track;
-    const payload: IntegrationTrackedResource = {
-      type: track.type,
-      id: track.id,
-      ...rest,
-    };
-    if (includeStepContext) {
-      payload.step = { index, ...action, ...stepExtras };
+  // Loop over each viewport size
+  for (const { size, viewport } of sizesToTest) {
+    if (sizesToTest.length > 1) {
+      console.log(`Testing at viewport: ${size} (${viewport.width}x${viewport.height})`);
     }
-    return payload;
-  };
 
-  try {
-    for (const [index, action] of test.steps.entries()) {
-      if (debugMode) {
-        console.log(`[DEBUG] Executing step ${index + 1}: ${action.type}`);
-      }
+    const browserContext = await browser.newContext({
+      viewport: { width: viewport.width, height: viewport.height },
+    });
+    const page = await browserContext.newPage();
+    page.setDefaultTimeout(defaultTimeout);
 
-      // Merge server-tracked resources before each action
-      const serverResources = trackingServer.getResources(sessionId);
-      for (const resource of serverResources) {
-        // Check for tracked users
-        if (resource.type === 'user' && !executionContext.appwriteContext.userId) {
-          executionContext.appwriteContext.userId = resource.id;
-        }
-        // Add to resources if not already tracked (only for known types)
-        const knownTypes = ['row', 'file', 'user', 'team', 'membership', 'message'] as const;
-        if (knownTypes.includes(resource.type as any)) {
-          const exists = executionContext.appwriteContext.resources.some(
-            r => r.type === resource.type && r.id === resource.id
-          );
-          if (!exists) {
-            executionContext.appwriteContext.resources.push({
-              type: resource.type as TrackedResource['type'],
-              id: resource.id,
-              databaseId: resource.databaseId as string | undefined,
-              tableId: resource.tableId as string | undefined,
-              bucketId: resource.bucketId as string | undefined,
-              teamId: resource.teamId as string | undefined,
-              createdAt: resource.createdAt || new Date().toISOString(),
-            });
-          }
-        }
+    // Initialize execution context with variables
+    const executionContext: ExecutionContext = {
+      variables: new Map<string, string>(),
+      lastEmail: null,
+      emailClient: null,
+      appwriteContext: createTestContext(),
+      appwriteConfig: test.config?.appwrite ? {
+        endpoint: test.config.appwrite.endpoint,
+        projectId: test.config.appwrite.projectId,
+        apiKey: test.config.appwrite.apiKey,
+      } : undefined,
+    };
+
+    // Initialize email client if configured
+    if (test.config?.email) {
+      const emailEndpoint = test.config.email.endpoint ?? process.env.INBUCKET_URL;
+      if (!emailEndpoint) {
+        throw new Error('Email testing requires endpoint in config or INBUCKET_URL env var');
       }
+      executionContext.emailClient = new InbucketClient({
+        endpoint: emailEndpoint,
+      });
+    }
+
+    // Set up network interception for Appwrite API responses
+    page.on('response', async (response) => {
+      const url = response.url();
+      const method = response.request().method();
 
       try {
-        // Handle screenshot separately since it has special return handling
-        if (action.type === 'screenshot') {
-          const ssAction = action as Extract<Action, { type: 'screenshot' }>;
-          const waitBefore = ssAction.waitBefore ?? 500;
-
-          if (waitBefore > 0) {
-            if (debugMode) {
-              console.log(`[DEBUG] Screenshot: waiting ${waitBefore}ms for visual stability`);
-            }
-            await page.waitForTimeout(waitBefore);
+        // Handle POST requests (resource creation)
+        if (method === 'POST') {
+          // User created
+          if (APPWRITE_PATTERNS.userCreate.test(url)) {
+            const data = await response.json();
+            executionContext.appwriteContext.userId = data.$id;
+            executionContext.appwriteContext.userEmail = data.email;
+            return;
           }
 
-          const screenshotPath = await runScreenshot(page, ssAction.name, screenshotDir, index);
-          results.push({ action, status: 'passed', screenshotPath });
-          const trackedPayload = buildTrackPayload(action, index, { screenshotPath });
-          if (trackedPayload) {
-            await trackResource(trackedPayload);
+          // Row created
+          const rowMatch = url.match(APPWRITE_PATTERNS.rowCreate);
+          if (rowMatch) {
+            const data = await response.json();
+            executionContext.appwriteContext.resources.push({
+              type: 'row',
+              id: data.$id,
+              databaseId: rowMatch[1],
+              tableId: rowMatch[2],
+              createdAt: new Date().toISOString(),
+            });
+            return;
           }
-          continue;
+
+          // File created
+          const fileMatch = url.match(APPWRITE_PATTERNS.fileCreate);
+          if (fileMatch) {
+            const data = await response.json();
+            executionContext.appwriteContext.resources.push({
+              type: 'file',
+              id: data.$id,
+              bucketId: fileMatch[1],
+              createdAt: new Date().toISOString(),
+            });
+            return;
+          }
+
+          // Team created
+          const teamMatch = url.match(APPWRITE_PATTERNS.teamCreate);
+          if (teamMatch) {
+            const data = await response.json();
+            executionContext.appwriteContext.resources.push({
+              type: 'team',
+              id: data.$id,
+              createdAt: new Date().toISOString(),
+            });
+            return;
+          }
+
+          // Membership created
+          const membershipMatch = url.match(APPWRITE_PATTERNS.membershipCreate);
+          if (membershipMatch) {
+            const data = await response.json();
+            executionContext.appwriteContext.resources.push({
+              type: 'membership',
+              id: data.$id,
+              teamId: membershipMatch[1],
+              createdAt: new Date().toISOString(),
+            });
+            return;
+          }
+
+          // Message created
+          const messageMatch = url.match(APPWRITE_PATTERNS.messageCreate);
+          if (messageMatch) {
+            const data = await response.json();
+            executionContext.appwriteContext.resources.push({
+              type: 'message',
+              id: data.$id,
+              createdAt: new Date().toISOString(),
+            });
+            return;
+          }
         }
 
-        // Use the new executeActionWithRetry for all other actions
-        await executeActionWithRetry(page, action, index, {
-          baseUrl: options.baseUrl ?? test.config?.web?.baseUrl,
-          context: executionContext,
-          screenshotDir,
-          debugMode,
-          interactive,
-          aiConfig: options.aiConfig,
-        });
+        // Handle PUT/PATCH requests (resource updates)
+        if (method === 'PUT' || method === 'PATCH') {
+          // Row updated
+          const rowUpdateMatch = url.match(APPWRITE_UPDATE_PATTERNS.rowUpdate);
+          if (rowUpdateMatch) {
+            const resourceId = rowUpdateMatch[3];
+            const existingResource = executionContext.appwriteContext.resources.find(
+              r => r.type === 'row' && r.id === resourceId
+            );
+            if (!existingResource) {
+              // Resource was updated but not created in this test - track it for potential cleanup
+              executionContext.appwriteContext.resources.push({
+                type: 'row',
+                id: resourceId,
+                databaseId: rowUpdateMatch[1],
+                tableId: rowUpdateMatch[2],
+                createdAt: new Date().toISOString(),
+              });
+            }
+            return;
+          }
 
-        results.push({ action, status: 'passed' });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        results.push({ action, status: 'failed', error: message });
-        throw error;
+          // File updated
+          const fileUpdateMatch = url.match(APPWRITE_UPDATE_PATTERNS.fileUpdate);
+          if (fileUpdateMatch) {
+            const resourceId = fileUpdateMatch[2];
+            const existingResource = executionContext.appwriteContext.resources.find(
+              r => r.type === 'file' && r.id === resourceId
+            );
+            if (!existingResource) {
+              // Resource was updated but not created in this test - track it for potential cleanup
+              executionContext.appwriteContext.resources.push({
+                type: 'file',
+                id: resourceId,
+                bucketId: fileUpdateMatch[1],
+                createdAt: new Date().toISOString(),
+              });
+            }
+            return;
+          }
+
+          // Team updated
+          const teamUpdateMatch = url.match(APPWRITE_UPDATE_PATTERNS.teamUpdate);
+          if (teamUpdateMatch) {
+            const resourceId = teamUpdateMatch[1];
+            const existingResource = executionContext.appwriteContext.resources.find(
+              r => r.type === 'team' && r.id === resourceId
+            );
+            if (!existingResource) {
+              // Resource was updated but not created in this test - track it for potential cleanup
+              executionContext.appwriteContext.resources.push({
+                type: 'team',
+                id: resourceId,
+                createdAt: new Date().toISOString(),
+              });
+            }
+            return;
+          }
+        }
+
+        // Handle DELETE requests (mark resources as deleted)
+        if (method === 'DELETE') {
+          // Row deleted
+          const rowDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.rowDelete);
+          if (rowDeleteMatch) {
+            const resourceId = rowDeleteMatch[3];
+            const resource = executionContext.appwriteContext.resources.find(
+              r => r.type === 'row' && r.id === resourceId
+            );
+            if (resource) {
+              resource.deleted = true;
+            }
+            return;
+          }
+
+          // File deleted
+          const fileDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.fileDelete);
+          if (fileDeleteMatch) {
+            const resourceId = fileDeleteMatch[2];
+            const resource = executionContext.appwriteContext.resources.find(
+              r => r.type === 'file' && r.id === resourceId
+            );
+            if (resource) {
+              resource.deleted = true;
+            }
+            return;
+          }
+
+          // Team deleted
+          const teamDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.teamDelete);
+          if (teamDeleteMatch) {
+            const resourceId = teamDeleteMatch[1];
+            const resource = executionContext.appwriteContext.resources.find(
+              r => r.type === 'team' && r.id === resourceId
+            );
+            if (resource) {
+              resource.deleted = true;
+            }
+            return;
+          }
+
+          // Membership deleted
+          const membershipDeleteMatch = url.match(APPWRITE_DELETE_PATTERNS.membershipDelete);
+          if (membershipDeleteMatch) {
+            const resourceId = membershipDeleteMatch[2];
+            const resource = executionContext.appwriteContext.resources.find(
+              r => r.type === 'membership' && r.id === resourceId
+            );
+            if (resource) {
+              resource.deleted = true;
+            }
+            return;
+          }
+        }
+      } catch {
+        // Ignore parse errors for non-JSON responses
+      }
+    });
+
+    // Initialize variables from test definition
+    if (test.variables) {
+      for (const [key, value] of Object.entries(test.variables)) {
+        // Interpolate variable values to handle nested {{uuid}}
+        const interpolated = interpolateVariables(value, executionContext.variables);
+        executionContext.variables.set(key, interpolated);
       }
     }
-  } finally {
+
+    const sizeResults: StepResult[] = [];
+    const buildTrackPayload = (
+      action: Action,
+      index: number,
+      stepExtras?: Record<string, unknown>
+    ): IntegrationTrackedResource | null => {
+      if (!('track' in action)) return null;
+      const track = (action as { track?: Record<string, unknown> }).track;
+      if (!track || typeof track !== 'object') return null;
+      if (typeof track.type !== 'string' || typeof track.id !== 'string') return null;
+
+      const { includeStepContext, ...rest } = track;
+      const payload: IntegrationTrackedResource = {
+        type: track.type,
+        id: track.id,
+        ...rest,
+      };
+      if (includeStepContext) {
+        payload.step = { index, ...action, ...stepExtras };
+      }
+      return payload;
+    };
+
+    let sizeTestFailed = false;
+
+    try {
+      for (const [index, action] of test.steps.entries()) {
+        if (debugMode) {
+          console.log(`[DEBUG] Executing step ${index + 1}: ${action.type}`);
+        }
+
+        // Merge server-tracked resources before each action
+        const serverResources = trackingServer.getResources(sessionId);
+        for (const resource of serverResources) {
+          // Check for tracked users
+          if (resource.type === 'user' && !executionContext.appwriteContext.userId) {
+            executionContext.appwriteContext.userId = resource.id;
+          }
+          // Add to resources if not already tracked (only for known types)
+          const knownTypes = ['row', 'file', 'user', 'team', 'membership', 'message'] as const;
+          if (knownTypes.includes(resource.type as any)) {
+            const exists = executionContext.appwriteContext.resources.some(
+              r => r.type === resource.type && r.id === resource.id
+            );
+            if (!exists) {
+              executionContext.appwriteContext.resources.push({
+                type: resource.type as TrackedResource['type'],
+                id: resource.id,
+                databaseId: resource.databaseId as string | undefined,
+                tableId: resource.tableId as string | undefined,
+                bucketId: resource.bucketId as string | undefined,
+                teamId: resource.teamId as string | undefined,
+                createdAt: resource.createdAt || new Date().toISOString(),
+              });
+            }
+          }
+        }
+
+        try {
+          // Handle screenshot separately since it has special return handling
+          if (action.type === 'screenshot') {
+            const ssAction = action as Extract<Action, { type: 'screenshot' }>;
+            const waitBefore = ssAction.waitBefore ?? 500;
+
+            if (waitBefore > 0) {
+              if (debugMode) {
+                console.log(`[DEBUG] Screenshot: waiting ${waitBefore}ms for visual stability`);
+              }
+              await page.waitForTimeout(waitBefore);
+            }
+
+            // Include viewport size in screenshot filename when testing multiple sizes
+            const screenshotName = sizesToTest.length > 1 && ssAction.name
+              ? ssAction.name.replace(/\.png$/, `-${size}.png`)
+              : ssAction.name;
+            const screenshotPath = await runScreenshot(page, screenshotName, screenshotDir, index);
+            sizeResults.push({ action, status: 'passed', screenshotPath });
+            const trackedPayload = buildTrackPayload(action, index, { screenshotPath });
+            if (trackedPayload) {
+              await trackResource(trackedPayload);
+            }
+            continue;
+          }
+
+          // Use the new executeActionWithRetry for all other actions
+          await executeActionWithRetry(page, action, index, {
+            baseUrl: options.baseUrl ?? test.config?.web?.baseUrl,
+            context: executionContext,
+            screenshotDir,
+            debugMode,
+            interactive,
+            aiConfig: options.aiConfig,
+          });
+
+          sizeResults.push({ action, status: 'passed' });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          sizeResults.push({ action, status: 'failed', error: message });
+          sizeTestFailed = true;
+          overallFailed = true;
+          // Don't throw - continue to next viewport size if there is one
+          break;
+        }
+      }
+    } finally {
+      // Always close this browser context
+      await browserContext.close();
+    }
+
+    // Add results with viewport prefix if multiple sizes
+    for (const result of sizeResults) {
+      if (sizesToTest.length > 1) {
+        // Clone the result with size info in error message if failed
+        if (result.status === 'failed' && result.error) {
+          allResults.push({
+            ...result,
+            error: `[${size}] ${result.error}`,
+          });
+        } else {
+          allResults.push(result);
+        }
+      } else {
+        allResults.push(result);
+      }
+    }
+
+    // Keep track of the last execution context for cleanup
+    lastExecutionContext = executionContext;
+  }
+
+  // Cleanup after all viewport tests complete
+  try {
     // Remove signal handlers
     process.off('SIGINT', cleanup);
     process.off('SIGTERM', cleanup);
 
-    await mergeFileTrackedResources(
-      fileTracking.trackFile,
-      executionContext.appwriteContext
-    );
-
-    // Run Appwrite cleanup if configured
-    if (test.config?.appwrite?.cleanup) {
-      const appwriteClient = new AppwriteTestClient({
-        endpoint: test.config.appwrite.endpoint,
-        projectId: test.config.appwrite.projectId,
-        apiKey: test.config.appwrite.apiKey,
-        cleanup: true,
-      });
-
-      const cleanupResult = await appwriteClient.cleanup(
-        executionContext.appwriteContext,
-        sessionId,
-        process.cwd()
+    if (lastExecutionContext) {
+      await mergeFileTrackedResources(
+        fileTracking.trackFile,
+        lastExecutionContext.appwriteContext
       );
-      console.log('Cleanup result:', cleanupResult);
+
+      // Run Appwrite cleanup if configured
+      if (test.config?.appwrite?.cleanup) {
+        const appwriteClient = new AppwriteTestClient({
+          endpoint: test.config.appwrite.endpoint,
+          projectId: test.config.appwrite.projectId,
+          apiKey: test.config.appwrite.apiKey,
+          cleanup: true,
+        });
+
+        const cleanupResult = await appwriteClient.cleanup(
+          lastExecutionContext.appwriteContext,
+          sessionId,
+          process.cwd()
+        );
+        console.log('Cleanup result:', cleanupResult);
+      }
     }
 
     await fileTracking.stop();
     delete process.env.INTELLITESTER_TRACK_FILE;
 
-    await browserContext.close();
     await browser.close();
 
     // Stop tracking server
@@ -1295,11 +1368,13 @@ export const runWebTest = async (
 
     // Stop webServer if it was started
     await webServerManager.stop();
+  } catch (cleanupError) {
+    console.error('Error during cleanup:', cleanupError);
   }
 
   return {
-    status: results.every((step) => step.status === 'passed') ? 'passed' : 'failed',
-    steps: results,
-    variables: executionContext.variables,
+    status: overallFailed ? 'failed' : 'passed',
+    steps: allResults,
+    variables: lastExecutionContext?.variables,
   };
 };

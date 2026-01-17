@@ -14,7 +14,7 @@ import { interpolateVariables } from '../../core/interpolation';
 import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
-import { getBrowserLaunchOptions } from './browserOptions.js';
+import { getBrowserLaunchOptions, VIEWPORT_SIZES, parseViewportSize, type ViewportSize } from './browserOptions.js';
 import {
   createTestContext,
   APPWRITE_PATTERNS,
@@ -42,6 +42,7 @@ export interface WorkflowOptions {
   sessionId?: string;
   trackDir?: string;
   baseUrl?: string; // Fallback baseUrl from pipeline config
+  testSizes?: string[]; // Viewport sizes to test (e.g., ['xs', 'md', 'xl'] or ['320x568', '1920x1080'])
 }
 
 export interface WorkflowWithContextOptions extends WorkflowOptions {
@@ -211,6 +212,10 @@ async function runTestInWorkflow(
             if (debugMode) console.log(`  [DEBUG] Tapping element:`, action.target);
             const handle = resolveLocator(action.target);
             await handle.click();
+            // Wait for network to settle after click (handles 302 redirect cookie timing)
+            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {
+              // Timeout is fine - proceed anyway
+            });
             break;
           }
           case 'input': {
@@ -1294,8 +1299,34 @@ export async function runWorkflow(
   console.log(`Launching ${browserName}${headless ? ' (headless)' : ' (visible)'}...`);
   const browser = await getBrowser(browserName).launch(getBrowserLaunchOptions({ headless, browser: browserName }));
   console.log(`Browser launched successfully`);
-  const browserContext = await browser.newContext();
-  const page = await browserContext.newPage();
+
+  // Determine viewport sizes to test
+  const testSizes = options.testSizes && options.testSizes.length > 0
+    ? options.testSizes
+    : ['1920x1080']; // Default to standard desktop size
+
+  // Validate all viewport sizes upfront
+  const viewportSizes: Array<{ size: string; viewport: { width: number; height: number } }> = [];
+  for (const size of testSizes) {
+    const viewport = parseViewportSize(size);
+    if (!viewport) {
+      throw new Error(
+        `Invalid viewport size: "${size}". Use named sizes (xs, sm, md, lg, xl) or WIDTHxHEIGHT format (e.g., "1920x1080")`
+      );
+    }
+    viewportSizes.push({ size, viewport });
+  }
+
+  // Track all results across viewport sizes
+  const allTestResults: WorkflowTestResult[] = [];
+  let anyFailed = false;
+  let lastCleanupResult: { success: boolean; deleted: string[]; failed: string[] } | undefined;
+
+  // Create browser context (will be replaced for each size)
+  let browserContext = await browser.newContext({
+    viewport: viewportSizes[0].viewport,
+  });
+  let page = await browserContext.newPage();
   page.setDefaultTimeout(30000);
 
   // 5. Create shared execution context
@@ -1323,15 +1354,55 @@ export async function runWorkflow(
   }
 
   try {
-    // 6. Run workflow with context (skipCleanup=true so we can collect tracking resources first)
-    const result = await runWorkflowWithContext(workflow, workflowFilePath, {
-      ...options,
-      page,
-      executionContext,
-      skipCleanup: true,
+    // 6. Run workflow for each viewport size
+    for (let sizeIndex = 0; sizeIndex < viewportSizes.length; sizeIndex++) {
+      const { size, viewport } = viewportSizes[sizeIndex];
+
+      // Create new browser context for each size (after first)
+      if (sizeIndex > 0) {
+        await browserContext.close();
+        browserContext = await browser.newContext({ viewport });
+        page = await browserContext.newPage();
+        page.setDefaultTimeout(30000);
+
+        // Re-setup Appwrite tracking for new page if configured
+        if (workflow.config?.appwrite) {
+          setupAppwriteTracking(page, executionContext);
+        }
+      }
+
+      console.log(`\nTesting workflow at viewport: ${size} (${viewport.width}x${viewport.height})`);
+
+      const result = await runWorkflowWithContext(workflow, workflowFilePath, {
+        ...options,
+        page,
+        executionContext,
+        skipCleanup: true,
+        sessionId,
+        testStartTime,
+      });
+
+      // Prefix test results with viewport size if testing multiple sizes
+      const sizePrefix = viewportSizes.length > 1 ? `[${size}] ` : '';
+      for (const testResult of result.tests) {
+        allTestResults.push({
+          ...testResult,
+          file: sizePrefix + testResult.file,
+        });
+      }
+
+      if (result.status === 'failed') {
+        anyFailed = true;
+      }
+    }
+
+    // Combine results - use the final result's structure
+    const result: { status: 'passed' | 'failed'; tests: WorkflowTestResult[]; sessionId: string; workflowFailed: boolean } = {
+      status: anyFailed ? 'failed' : 'passed',
+      tests: allTestResults,
       sessionId,
-      testStartTime,
-    });
+      workflowFailed: anyFailed,
+    };
 
     // 7. Collect server-tracked resources AFTER workflow execution
     if (trackingServer) {

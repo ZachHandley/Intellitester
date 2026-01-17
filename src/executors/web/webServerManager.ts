@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { rmSync } from 'fs';
 
 export interface WebServerConfig {
   url: string;
@@ -15,6 +16,61 @@ export interface WebServerConfig {
   idleTimeout?: number;
 }
 
+// Marker file constants and helpers for server ownership tracking
+const SERVER_MARKER_FILE = 'server.json';
+const INTELLITESTER_DIR = '.intellitester';
+
+interface ServerMarker {
+  pid: number;
+  port: number;
+  url: string;
+  cwd: string;
+  command: string;
+  startTime: string;
+}
+
+const getMarkerPath = (cwd: string): string => path.join(cwd, INTELLITESTER_DIR, SERVER_MARKER_FILE);
+
+async function writeMarkerFile(cwd: string, marker: ServerMarker): Promise<void> {
+  const dir = path.join(cwd, INTELLITESTER_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(getMarkerPath(cwd), JSON.stringify(marker, null, 2), 'utf-8');
+}
+
+async function readMarkerFile(cwd: string): Promise<ServerMarker | null> {
+  try {
+    const content = await fs.readFile(getMarkerPath(cwd), 'utf-8');
+    return JSON.parse(content) as ServerMarker;
+  } catch {
+    return null;
+  }
+}
+
+async function deleteMarkerFile(cwd: string): Promise<void> {
+  try {
+    await fs.rm(getMarkerPath(cwd), { force: true });
+  } catch {
+    // Ignore errors
+  }
+}
+
+function deleteMarkerFileSync(cwd: string): void {
+  try {
+    rmSync(getMarkerPath(cwd), { force: true });
+  } catch {
+    // Ignore errors
+  }
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0); // Signal 0 just checks if process exists
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function isServerRunning(url: string): Promise<boolean> {
   try {
     const response = await fetch(url, { method: 'HEAD' });
@@ -22,6 +78,40 @@ async function isServerRunning(url: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function verifyMarker(cwd: string, url: string): Promise<{ valid: boolean; marker: ServerMarker | null; reason?: string }> {
+  const marker = await readMarkerFile(cwd);
+  if (!marker) {
+    return { valid: false, marker: null, reason: 'No marker file found' };
+  }
+  
+  if (marker.url !== url) {
+    return { valid: false, marker, reason: `URL mismatch: expected ${url}, got ${marker.url}` };
+  }
+  
+  if (marker.cwd !== cwd) {
+    return { valid: false, marker, reason: `CWD mismatch: expected ${cwd}, got ${marker.cwd}` };
+  }
+  
+  if (!isPidAlive(marker.pid)) {
+    return { valid: false, marker, reason: `PID ${marker.pid} is not alive` };
+  }
+  
+  // Verify the server is actually responding (with retries)
+  let serverResponding = false;
+  for (let i = 0; i < 3; i++) {
+    if (await isServerRunning(url)) {
+      serverResponding = true;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  if (!serverResponding) {
+    return { valid: false, marker, reason: 'Server not responding to HTTP after retries' };
+  }
+  
+  return { valid: true, marker };
 }
 
 async function readPackageJson(cwd: string): Promise<Record<string, unknown> | null> {
@@ -219,12 +309,46 @@ class WebServerManager {
       await this.stop();
     }
 
-    // Check if something external is running at this URL
-    if (reuseExistingServer && await isServerRunning(url)) {
-      console.log(`Server already running at ${url}`);
-      this.currentUrl = url;
-      this.currentCwd = cwd;
-      return null; // External server, we don't manage it
+    // Check if we have a valid marker for a server we previously started
+    const verification = await verifyMarker(cwd, url);
+    if (verification.valid && reuseExistingServer) {
+      // Wait a moment to ensure server is fully ready
+      await new Promise(r => setTimeout(r, 1000));
+      // Double-check it's still responding
+      if (!await isServerRunning(url)) {
+        console.log('Server stopped responding, will start fresh');
+      } else {
+        console.log(`Reusing existing server at ${url} (PID: ${verification.marker!.pid})`);
+        this.currentUrl = url;
+        this.currentCwd = cwd;
+        return null;
+      }
+    }
+
+    // If marker exists but invalid, clean up the orphaned server
+    if (verification.marker && !verification.valid) {
+      console.log(`Cleaning up stale server: ${verification.reason}`);
+      if (isPidAlive(verification.marker.pid)) {
+        try {
+          process.kill(verification.marker.pid, 'SIGTERM');
+          // Wait a bit for graceful shutdown
+          await new Promise(r => setTimeout(r, 1000));
+          if (isPidAlive(verification.marker.pid)) {
+            process.kill(verification.marker.pid, 'SIGKILL');
+          }
+        } catch {
+          // Process might already be dead
+        }
+      }
+      await deleteMarkerFile(cwd);
+    }
+
+    // If something else is running at this URL (not ours), handle it
+    if (await isServerRunning(url)) {
+      if (!reuseExistingServer) {
+        throw new Error(`Port ${new URL(url).port} is already in use by another process`);
+      }
+      console.warn(`Warning: Unknown server detected at ${url}. Will attempt to start anyway.`);
     }
 
     // Determine the command to run
@@ -263,6 +387,13 @@ class WebServerManager {
       lastOutputTime = Date.now();
       stderrOutput += data.toString();
       process.stderr.write(`[server] ${data}`);
+    });
+
+    // Delete marker if server exits unexpectedly
+    this.serverProcess.on('exit', () => {
+      if (this.currentCwd) {
+        deleteMarkerFileSync(this.currentCwd);
+      }
     });
 
     // Wait for server to be ready
@@ -321,6 +452,19 @@ class WebServerManager {
     });
 
     console.log(`Server ready at ${url}`);
+
+    // Write marker file for future reuse verification
+    if (this.serverProcess?.pid) {
+      await writeMarkerFile(cwd, {
+        pid: this.serverProcess.pid,
+        port: parseInt(new URL(url).port || '80'),
+        url,
+        cwd,
+        command,
+        startTime: new Date().toISOString(),
+      });
+    }
+
     return this.serverProcess;
   }
 
@@ -377,6 +521,11 @@ class WebServerManager {
     // Wait a bit more to ensure port is released
     await new Promise(r => setTimeout(r, 200));
 
+    // Delete marker file before clearing state
+    if (this.currentCwd) {
+      await deleteMarkerFile(this.currentCwd);
+    }
+
     this.serverProcess = null;
     this.currentUrl = null;
     this.currentCwd = null;
@@ -390,6 +539,10 @@ class WebServerManager {
     if (this.serverProcess && !this.serverProcess.killed) {
       console.log('Stopping server...');
       this.serverProcess.kill('SIGTERM');
+    }
+    // Delete marker file synchronously for signal handlers
+    if (this.currentCwd) {
+      deleteMarkerFileSync(this.currentCwd);
     }
     this.serverProcess = null;
     this.currentUrl = null;

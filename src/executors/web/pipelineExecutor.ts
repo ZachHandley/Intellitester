@@ -16,7 +16,7 @@ import type {
   WorkflowReference,
 } from '../../core/types';
 import { interpolateVariables } from '../../core/interpolation';
-import { getBrowserLaunchOptions } from './browserOptions.js';
+import { getBrowserLaunchOptions, parseViewportSize } from './browserOptions.js';
 import { loadWorkflowDefinition } from '../../core/loader';
 import {
   runWorkflowWithContext,
@@ -38,6 +38,8 @@ export interface PipelineOptions {
   debug?: boolean;
   sessionId?: string;
   trackDir?: string;
+  /** Viewport sizes to test at. Can be predefined ('xs', 'sm', 'md', 'lg', 'xl') or custom 'WxH' format (e.g., '1920x1080'). */
+  testSizes?: string[];
 }
 
 const getBrowser = (browser: BrowserName): BrowserType => {
@@ -269,8 +271,33 @@ export async function runPipeline(
   const browserName = options.browser ?? pipeline.config?.web?.browser ?? 'chromium';
   const headless = options.headed === true ? false : (pipeline.config?.web?.headless ?? true);
   const browser = await getBrowser(browserName).launch(getBrowserLaunchOptions({ headless, browser: browserName }));
-  const browserContext = await browser.newContext();
-  const page = await browserContext.newPage();
+
+  // Determine viewport sizes to test
+  const testSizes = options.testSizes && options.testSizes.length > 0
+    ? options.testSizes
+    : ['1920x1080']; // Default to standard desktop size
+
+  // Validate all viewport sizes upfront
+  const viewportSizes: Array<{ size: string; viewport: { width: number; height: number } }> = [];
+  for (const size of testSizes) {
+    const viewport = parseViewportSize(size);
+    if (!viewport) {
+      throw new Error(
+        `Invalid viewport size: "${size}". Use named sizes (xs, sm, md, lg, xl) or WIDTHxHEIGHT format (e.g., "1920x1080")`
+      );
+    }
+    viewportSizes.push({ size, viewport });
+  }
+
+  // Track all results across viewport sizes
+  const allWorkflowResults: PipelineWorkflowResult[] = [];
+  let anyFailed = false;
+
+  // Create browser context (will be replaced for each size)
+  let browserContext = await browser.newContext({
+    viewport: viewportSizes[0].viewport,
+  });
+  let page = await browserContext.newPage();
   page.setDefaultTimeout(30000);
 
   // 7. Create shared ExecutionContext for ALL workflows
@@ -293,158 +320,191 @@ export async function runPipeline(
     setupAppwriteTracking(page, executionContext);
   }
 
-  // Track workflow execution status
-  const completedIds = new Set<string>();
-  const failedIds = new Set<string>();
-  const skippedIds = new Set<string>();
-  const workflowResults: PipelineWorkflowResult[] = [];
-  let pipelineFailed = false;
-  let shouldStopPipeline = false;
-
   try {
-    // 9. Execute workflows in order
-    for (const workflowRef of executionOrder) {
-      const workflowId = workflowRef.id ?? workflowRef.file;
+    // 9. Run pipeline for each viewport size
+    for (let sizeIndex = 0; sizeIndex < viewportSizes.length; sizeIndex++) {
+      const { size, viewport } = viewportSizes[sizeIndex];
 
-      if (shouldStopPipeline) {
-        // Mark remaining workflows as skipped
-        workflowResults.push({
-          id: workflowRef.id,
-          file: workflowRef.file,
-          status: 'skipped',
-          error: 'Pipeline stopped due to previous failure',
-        });
-        skippedIds.add(workflowId);
-        continue;
+      // Create new browser context for each size (after first)
+      if (sizeIndex > 0) {
+        await browserContext.close();
+        browserContext = await browser.newContext({ viewport });
+        page = await browserContext.newPage();
+        page.setDefaultTimeout(30000);
+
+        // Re-setup Appwrite tracking for new page if configured
+        if (pipeline.config?.appwrite) {
+          setupAppwriteTracking(page, executionContext);
+        }
       }
 
-      // Check if dependencies passed
-      const deps = workflowRef.depends_on ?? [];
-      const depsFailed = deps.some((id) => failedIds.has(id) || skippedIds.has(id));
-      const depsNotMet = deps.some(
-        (id) => !completedIds.has(id) && !failedIds.has(id) && !skippedIds.has(id)
-      );
+      console.log(`\nTesting pipeline at viewport: ${size} (${viewport.width}x${viewport.height})`);
 
-      if (depsFailed || depsNotMet) {
-        const onFailure = workflowRef.on_failure ?? pipeline.on_failure;
+      // Track workflow execution status for this viewport size
+      const completedIds = new Set<string>();
+      const failedIds = new Set<string>();
+      const skippedIds = new Set<string>();
+      const workflowResults: PipelineWorkflowResult[] = [];
+      let pipelineFailed = false;
+      let shouldStopPipeline = false;
 
-        if (onFailure === 'skip') {
-          console.log(`\nSkipping workflow "${workflowId}" - dependencies not met`);
+      // Execute workflows in order
+      for (const workflowRef of executionOrder) {
+        const workflowId = workflowRef.id ?? workflowRef.file;
+
+        if (shouldStopPipeline) {
+          // Mark remaining workflows as skipped
           workflowResults.push({
             id: workflowRef.id,
             file: workflowRef.file,
             status: 'skipped',
-            error: `Dependencies not met: ${deps.filter((d) => failedIds.has(d) || skippedIds.has(d)).join(', ')}`,
+            error: 'Pipeline stopped due to previous failure',
           });
           skippedIds.add(workflowId);
           continue;
-        } else if (onFailure === 'fail') {
-          console.log(
-            `\nPipeline stopped - workflow "${workflowId}" dependencies failed`
-          );
-          workflowResults.push({
-            id: workflowRef.id,
-            file: workflowRef.file,
-            status: 'failed',
-            error: `Dependencies failed: ${deps.filter((d) => failedIds.has(d) || skippedIds.has(d)).join(', ')}`,
-          });
-          failedIds.add(workflowId);
-          pipelineFailed = true;
-          shouldStopPipeline = true;
-          continue;
         }
-        // 'ignore' falls through to run anyway
-        console.log(
-          `\nRunning workflow "${workflowId}" despite dependency failure (on_failure: ignore)`
+
+        // Check if dependencies passed
+        const deps = workflowRef.depends_on ?? [];
+        const depsFailed = deps.some((id) => failedIds.has(id) || skippedIds.has(id));
+        const depsNotMet = deps.some(
+          (id) => !completedIds.has(id) && !failedIds.has(id) && !skippedIds.has(id)
         );
-      }
 
-      // Load and execute workflow
-      const workflowFilePath = path.resolve(pipelineDir, workflowRef.file);
-      console.log(`\n${'='.repeat(40)}`);
-      console.log(`Workflow: ${workflowId}`);
-      console.log(`File: ${workflowRef.file}`);
-      console.log(`${'='.repeat(40)}`);
+        if (depsFailed || depsNotMet) {
+          const onFailure = workflowRef.on_failure ?? pipeline.on_failure;
 
-      try {
-        const workflowDefinition = await loadWorkflowDefinition(workflowFilePath);
-
-        // Apply workflow-level variables from pipeline
-        if (workflowRef.variables) {
-          for (const [key, value] of Object.entries(workflowRef.variables)) {
-            // Use centralized interpolation for all built-in variables
-            const interpolated = interpolateVariables(value, executionContext.variables);
-            executionContext.variables.set(key, interpolated);
+          if (onFailure === 'skip') {
+            console.log(`\nSkipping workflow "${workflowId}" - dependencies not met`);
+            workflowResults.push({
+              id: workflowRef.id,
+              file: workflowRef.file,
+              status: 'skipped',
+              error: `Dependencies not met: ${deps.filter((d) => failedIds.has(d) || skippedIds.has(d)).join(', ')}`,
+            });
+            skippedIds.add(workflowId);
+            continue;
+          } else if (onFailure === 'fail') {
+            console.log(
+              `\nPipeline stopped - workflow "${workflowId}" dependencies failed`
+            );
+            workflowResults.push({
+              id: workflowRef.id,
+              file: workflowRef.file,
+              status: 'failed',
+              error: `Dependencies failed: ${deps.filter((d) => failedIds.has(d) || skippedIds.has(d)).join(', ')}`,
+            });
+            failedIds.add(workflowId);
+            pipelineFailed = true;
+            shouldStopPipeline = true;
+            continue;
           }
+          // 'ignore' falls through to run anyway
+          console.log(
+            `\nRunning workflow "${workflowId}" despite dependency failure (on_failure: ignore)`
+          );
         }
 
-        // Execute workflow with shared context
-        const workflowOptions: WorkflowOptions & {
-          page: Page;
-          executionContext: ExecutionContext;
-          skipCleanup: boolean;
-          sessionId: string;
-          testStartTime: string;
-        } = {
-          ...options,
-          page,
-          executionContext,
-          skipCleanup: true, // Defer cleanup to pipeline end
-          sessionId,
-          testStartTime,
-          baseUrl: pipeline.config?.web?.baseUrl, // Pass pipeline's baseUrl as fallback
-        };
+        // Load and execute workflow
+        const workflowFilePath = path.resolve(pipelineDir, workflowRef.file);
+        console.log(`\n${'='.repeat(40)}`);
+        console.log(`Workflow: ${workflowId}`);
+        console.log(`File: ${workflowRef.file}`);
+        console.log(`${'='.repeat(40)}`);
 
-        const result = await runWorkflowWithContext(
-          workflowDefinition,
-          workflowFilePath,
-          workflowOptions
-        );
+        try {
+          const workflowDefinition = await loadWorkflowDefinition(workflowFilePath);
 
-        if (result.status === 'passed') {
-          completedIds.add(workflowId);
-          workflowResults.push({
-            id: workflowRef.id,
-            file: workflowRef.file,
-            status: 'passed',
-            workflowResult: result,
-          });
-        } else {
+          // Apply workflow-level variables from pipeline
+          if (workflowRef.variables) {
+            for (const [key, value] of Object.entries(workflowRef.variables)) {
+              // Use centralized interpolation for all built-in variables
+              const interpolated = interpolateVariables(value, executionContext.variables);
+              executionContext.variables.set(key, interpolated);
+            }
+          }
+
+          // Execute workflow with shared context
+          const workflowOptions: WorkflowOptions & {
+            page: Page;
+            executionContext: ExecutionContext;
+            skipCleanup: boolean;
+            sessionId: string;
+            testStartTime: string;
+          } = {
+            ...options,
+            page,
+            executionContext,
+            skipCleanup: true, // Defer cleanup to pipeline end
+            sessionId,
+            testStartTime,
+            baseUrl: pipeline.config?.web?.baseUrl, // Pass pipeline's baseUrl as fallback
+          };
+
+          const result = await runWorkflowWithContext(
+            workflowDefinition,
+            workflowFilePath,
+            workflowOptions
+          );
+
+          if (result.status === 'passed') {
+            completedIds.add(workflowId);
+            workflowResults.push({
+              id: workflowRef.id,
+              file: workflowRef.file,
+              status: 'passed',
+              workflowResult: result,
+            });
+          } else {
+            failedIds.add(workflowId);
+            pipelineFailed = true;
+            workflowResults.push({
+              id: workflowRef.id,
+              file: workflowRef.file,
+              status: 'failed',
+              workflowResult: result,
+              error: result.tests.find((t) => t.status === 'failed')?.error,
+            });
+
+            // Check if we should stop the pipeline
+            const onFailure = workflowRef.on_failure ?? pipeline.on_failure;
+            if (onFailure === 'fail') {
+              console.log(`\nPipeline stopped due to workflow "${workflowId}" failure`);
+              shouldStopPipeline = true;
+            }
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          console.error(`Failed to load/run workflow "${workflowId}": ${message}`);
+
           failedIds.add(workflowId);
           pipelineFailed = true;
           workflowResults.push({
             id: workflowRef.id,
             file: workflowRef.file,
             status: 'failed',
-            workflowResult: result,
-            error: result.tests.find((t) => t.status === 'failed')?.error,
+            error: message,
           });
 
-          // Check if we should stop the pipeline
           const onFailure = workflowRef.on_failure ?? pipeline.on_failure;
           if (onFailure === 'fail') {
             console.log(`\nPipeline stopped due to workflow "${workflowId}" failure`);
             shouldStopPipeline = true;
           }
         }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error(`Failed to load/run workflow "${workflowId}": ${message}`);
+      }
 
-        failedIds.add(workflowId);
-        pipelineFailed = true;
-        workflowResults.push({
-          id: workflowRef.id,
-          file: workflowRef.file,
-          status: 'failed',
-          error: message,
+      // Prefix workflow results with viewport size if testing multiple sizes
+      const sizePrefix = viewportSizes.length > 1 ? `[${size}] ` : '';
+      for (const workflowResult of workflowResults) {
+        allWorkflowResults.push({
+          ...workflowResult,
+          file: sizePrefix + workflowResult.file,
         });
+      }
 
-        const onFailure = workflowRef.on_failure ?? pipeline.on_failure;
-        if (onFailure === 'fail') {
-          console.log(`\nPipeline stopped due to workflow "${workflowId}" failure`);
-          shouldStopPipeline = true;
-        }
+      if (pipelineFailed) {
+        anyFailed = true;
       }
     }
 
@@ -464,7 +524,7 @@ export async function runPipeline(
     let cleanupResult: { success: boolean; deleted: string[]; failed: string[] } | undefined;
 
     if (cleanupConfig) {
-      const shouldCleanup = pipelineFailed ? pipeline.cleanup_on_failure : true;
+      const shouldCleanup = anyFailed ? pipeline.cleanup_on_failure : true;
 
       if (shouldCleanup) {
         try {
@@ -531,20 +591,20 @@ export async function runPipeline(
     }
 
     // 12. Calculate final status
-    const passedCount = workflowResults.filter((w) => w.status === 'passed').length;
-    const failedCount = workflowResults.filter((w) => w.status === 'failed').length;
-    const skippedCount = workflowResults.filter((w) => w.status === 'skipped').length;
+    const passedCount = allWorkflowResults.filter((w) => w.status === 'passed').length;
+    const failedCount = allWorkflowResults.filter((w) => w.status === 'failed').length;
+    const skippedCount = allWorkflowResults.filter((w) => w.status === 'skipped').length;
 
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`Pipeline: ${pipelineFailed ? 'FAILED' : 'PASSED'}`);
+    console.log(`Pipeline: ${anyFailed ? 'FAILED' : 'PASSED'}`);
     console.log(
       `Workflows: ${passedCount} passed, ${failedCount} failed, ${skippedCount} skipped`
     );
     console.log(`${'='.repeat(60)}\n`);
 
     return {
-      status: pipelineFailed ? 'failed' : 'passed',
-      workflows: workflowResults,
+      status: anyFailed ? 'failed' : 'passed',
+      workflows: allWorkflowResults,
       sessionId,
       cleanupResult,
     };

@@ -5,6 +5,46 @@
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
 
+/**
+ * Viewport sizes matching Tailwind breakpoints for responsive testing.
+ */
+export type ViewportSize = 'xs' | 'sm' | 'md' | 'lg' | 'xl';
+
+export const VIEWPORT_SIZES: Record<ViewportSize, { width: number; height: number }> = {
+  xs: { width: 320, height: 568 },   // Mobile portrait
+  sm: { width: 640, height: 800 },   // Small tablet
+  md: { width: 768, height: 1024 },  // Tablet
+  lg: { width: 1024, height: 768 },  // Desktop
+  xl: { width: 1280, height: 720 },  // Large desktop
+};
+
+/**
+ * Parse a viewport size string into width and height dimensions.
+ * Accepts either a named size ('xs', 'sm', 'md', 'lg', 'xl') or a custom
+ * dimension string like '1280x800' or '1920x1080'.
+ *
+ * @param size - The viewport size string to parse
+ * @returns The parsed dimensions, or null if invalid
+ */
+export function parseViewportSize(size: string): { width: number; height: number } | null {
+  // Check if it's a named size
+  if (size in VIEWPORT_SIZES) {
+    return VIEWPORT_SIZES[size as ViewportSize];
+  }
+
+  // Try to parse as WxH format (e.g., '1280x800', '1920x1080')
+  const match = size.match(/^(\d+)x(\d+)$/);
+  if (match) {
+    const width = parseInt(match[1], 10);
+    const height = parseInt(match[2], 10);
+    if (width > 0 && height > 0) {
+      return { width, height };
+    }
+  }
+
+  return null;
+}
+
 export interface BrowserLaunchOptions {
   headless: boolean;
   browser?: BrowserName;
@@ -22,11 +62,20 @@ export function getBrowserLaunchOptions(options: BrowserLaunchOptions) {
     return {
       headless,
       args: [
+        // Use Chrome's new headless mode which behaves more like regular browser
+        ...(headless ? ['--headless=new'] : []),
+
+        // For Docker/CI environments - disables sandboxing (required for root/container)
+        '--no-sandbox',
+
         // Shared memory - critical for Docker/CI, harmless locally
         '--disable-dev-shm-usage',
 
         // GPU acceleration - not needed in headless mode
         '--disable-gpu',
+
+        // Set explicit window size (fallback for viewport)
+        '--window-size=1920,1080',
 
         // Reduce overhead
         '--disable-extensions',

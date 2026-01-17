@@ -16,6 +16,8 @@ const pipelineWebConfigSchema = z.object({
   baseUrl: nonEmptyString.url().optional().describe('Base URL for all workflows in this pipeline'),
   browser: z.enum(['chromium', 'firefox', 'webkit']).optional().describe('Browser to use for all web tests'),
   headless: z.boolean().optional().describe('Run browser in headless mode'),
+  testSizes: z.array(z.enum(['xs', 'sm', 'md', 'lg', 'xl'])).optional()
+    .describe('Viewport sizes to test (Tailwind breakpoints). Tests run once per size.'),
 }).describe('Web platform configuration for the pipeline');
 
 // Pipeline-specific Appwrite config

@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
 
 import {
   chromium,
@@ -23,27 +22,11 @@ import { getAISuggestion } from '../../ai/errorHelper';
 import { TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
 import { track as trackResource } from '../../integration/index.js';
 import type { TrackedResource as IntegrationTrackedResource } from '../../integration/index.js';
+import { webServerManager, type WebServerConfig } from './webServerManager.js';
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
 
-export interface WebServerConfig {
-  // Option 1: Explicit command
-  command?: string;
-
-  // Option 2: Auto-detect from package.json and build output
-  auto?: boolean;
-
-  // Option 3: Serve static directory
-  static?: string;
-
-  url: string;
-  port?: number;
-  reuseExistingServer?: boolean;
-  timeout?: number;
-  idleTimeout?: number; // ms before failing if no output (default: 20000)
-  workdir?: string;
-  cwd?: string; // Deprecated: use workdir instead
-}
+export type { WebServerConfig };
 
 export interface WebRunOptions {
   baseUrl?: string;
@@ -290,266 +273,6 @@ const getBrowser = (browser: BrowserName): BrowserType => {
       return chromium;
   }
 };
-
-async function isServerRunning(url: string): Promise<boolean> {
-  try {
-    const response = await fetch(url, { method: 'HEAD' });
-    return response.ok || response.status < 500;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForServer(url: string, timeout: number): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    if (await isServerRunning(url)) return;
-    await new Promise(r => setTimeout(r, 500));
-  }
-  throw new Error(`Server at ${url} not ready after ${timeout}ms`);
-}
-
-async function detectBuildDirectory(cwd: string): Promise<string | null> {
-  // Order matters - check framework-specific dirs first, then generic ones
-  const commonDirs = [
-    '.next', // Next.js
-    '.output', // Nuxt 3
-    '.svelte-kit', // SvelteKit
-    'dist', // Vite, Astro, Rollup, generic
-    'build', // CRA, Remix, generic
-    'out', // Next.js static export
-  ];
-  for (const dir of commonDirs) {
-    const fullPath = path.join(cwd, dir);
-    try {
-      const stat = await fs.stat(fullPath);
-      if (stat.isDirectory()) {
-        return dir;
-      }
-    } catch {
-      // Directory doesn't exist, continue
-    }
-  }
-  return null;
-}
-
-async function readPackageJson(cwd: string): Promise<any> {
-  try {
-    const packagePath = path.join(cwd, 'package.json');
-    const content = await fs.readFile(packagePath, 'utf-8');
-    return JSON.parse(content);
-  } catch {
-    return null;
-  }
-}
-
-type FrameworkInfo = {
-  name: string;
-  buildCommand: string;
-  devCommand: string;
-};
-
-function detectFramework(pkg: Record<string, unknown> | null): FrameworkInfo | null {
-  if (!pkg) return null;
-
-  const deps = { ...(pkg.dependencies as Record<string, string> || {}), ...(pkg.devDependencies as Record<string, string> || {}) };
-
-  // Check in order of specificity (meta-frameworks first, then base frameworks)
-  if (deps['next']) {
-    return { name: 'next', buildCommand: 'npx -y next start', devCommand: 'next dev' };
-  }
-  if (deps['nuxt']) {
-    return { name: 'nuxt', buildCommand: 'node .output/server/index.mjs', devCommand: 'nuxi dev' };
-  }
-  if (deps['astro']) {
-    // Use astro dev for both - astro preview doesn't work with some adapters (e.g., Cloudflare)
-    return { name: 'astro', buildCommand: 'npx -y astro dev', devCommand: 'astro dev' };
-  }
-  if (deps['@sveltejs/kit']) {
-    return { name: 'sveltekit', buildCommand: 'npx -y vite preview', devCommand: 'vite dev' };
-  }
-  if (deps['@remix-run/serve'] || deps['@remix-run/dev']) {
-    return { name: 'remix', buildCommand: 'npx -y remix-serve build/server/index.js', devCommand: 'remix vite:dev' };
-  }
-  if (deps['vite']) {
-    return { name: 'vite', buildCommand: 'npx -y vite preview', devCommand: 'vite dev' };
-  }
-  if (deps['react-scripts']) {
-    return { name: 'cra', buildCommand: 'npx -y serve -s build', devCommand: 'react-scripts start' };
-  }
-
-  return null;
-}
-
-type PackageManager = 'deno' | 'bun' | 'pnpm' | 'yarn' | 'npm';
-
-async function detectPackageManager(cwd: string): Promise<PackageManager> {
-  const hasDenoLock = await fs.stat(path.join(cwd, 'deno.lock')).catch(() => null);
-  const hasBunLock = await fs.stat(path.join(cwd, 'bun.lockb')).catch(() => null);
-  const hasPnpmLock = await fs.stat(path.join(cwd, 'pnpm-lock.yaml')).catch(() => null);
-  const hasYarnLock = await fs.stat(path.join(cwd, 'yarn.lock')).catch(() => null);
-
-  if (hasDenoLock) return 'deno';
-  if (hasBunLock) return 'bun';
-  if (hasPnpmLock) return 'pnpm';
-  if (hasYarnLock) return 'yarn';
-  return 'npm';
-}
-
-function getDevCommand(pm: PackageManager, script: string): string {
-  switch (pm) {
-    case 'deno': return `deno task ${script}`;
-    case 'bun': return `bun run ${script}`;
-    case 'pnpm': return `pnpm ${script}`;
-    case 'yarn': return `yarn ${script}`;
-    case 'npm': return `npm run ${script}`;
-  }
-}
-
-async function detectServerCommand(cwd: string): Promise<string> {
-  const pkg = await readPackageJson(cwd);
-  const framework = detectFramework(pkg);
-  const pm = await detectPackageManager(cwd);
-  const buildDir = await detectBuildDirectory(cwd);
-
-  // If we have a build directory, use the appropriate preview/start command
-  if (buildDir) {
-    if (framework) {
-      console.log(`Detected ${framework.name} project with build at ${buildDir}`);
-      return framework.buildCommand;
-    }
-    // Unknown framework with build dir - use generic static server
-    console.log(`Detected build directory at ${buildDir}, using static server`);
-    return `npx -y serve ${buildDir}`;
-  }
-
-  // No build directory - run dev server
-  if (pkg?.scripts?.dev) {
-    if (framework) {
-      console.log(`Detected ${framework.name} project, running dev server`);
-    }
-    return getDevCommand(pm, 'dev');
-  }
-
-  if (pkg?.scripts?.start) {
-    return getDevCommand(pm, 'start');
-  }
-
-  throw new Error('Could not auto-detect server command. Please specify command explicitly.');
-}
-
-export async function startWebServer(config: WebServerConfig): Promise<ChildProcess | null> {
-  const { url, reuseExistingServer = true, timeout = 30000, idleTimeout = 20000 } = config;
-  const cwd = config.workdir ?? config.cwd ?? process.cwd();
-
-  // Check if already running
-  if (reuseExistingServer && await isServerRunning(url)) {
-    console.log(`Server already running at ${url}`);
-    return null;
-  }
-
-  // Determine the command to run
-  let command: string;
-
-  if (config.command) {
-    // Option 1: Explicit command
-    command = config.command;
-  } else if (config.static) {
-    // Option 3: Serve static directory
-    const port = config.port ?? new URL(url).port ?? '3000';
-    command = `npx -y serve ${config.static} -l ${port}`;
-  } else if (config.auto) {
-    // Option 2: Auto-detect
-    command = await detectServerCommand(cwd);
-  } else {
-    throw new Error('WebServerConfig requires command, auto: true, or static directory');
-  }
-
-  console.log(`Starting server: ${command}`);
-  const serverProcess = spawn(command, {
-    shell: true,
-    stdio: 'pipe',
-    cwd,
-    detached: false,
-  });
-
-  let stderrOutput = '';
-  let lastOutputTime = Date.now();
-
-  serverProcess.stdout?.on('data', (data) => {
-    lastOutputTime = Date.now();
-    process.stdout.write(`[server] ${data}`);
-  });
-
-  serverProcess.stderr?.on('data', (data) => {
-    lastOutputTime = Date.now();
-    stderrOutput += data.toString();
-    process.stderr.write(`[server] ${data}`);
-  });
-
-  // Race between: server ready vs. process exit vs. timeout vs. idle timeout
-  await new Promise<void>((resolve, reject) => {
-    let resolved = false;
-    const startTime = Date.now();
-
-    const cleanup = () => {
-      resolved = true;
-      clearInterval(pollInterval);
-    };
-
-    // Handle early process exit
-    serverProcess.on('close', (code) => {
-      if (!resolved && code !== 0 && code !== null) {
-        cleanup();
-        reject(new Error(`Server exited with code ${code}\n${stderrOutput}`));
-      }
-    });
-
-    serverProcess.on('error', (err) => {
-      if (!resolved) {
-        cleanup();
-        reject(err);
-      }
-    });
-
-    // Poll for server readiness, overall timeout, and idle timeout
-    const pollInterval = setInterval(async () => {
-      if (resolved) return;
-
-      // Check if server is ready
-      if (await isServerRunning(url)) {
-        cleanup();
-        resolve();
-        return;
-      }
-
-      // Check overall timeout
-      if (Date.now() - startTime > timeout) {
-        cleanup();
-        reject(new Error(`Server at ${url} not ready after ${timeout}ms`));
-        return;
-      }
-
-      // Check idle timeout (no output for idleTimeout ms)
-      if (Date.now() - lastOutputTime > idleTimeout) {
-        cleanup();
-        serverProcess.kill('SIGTERM');
-        reject(new Error(`Server stalled - no output for ${idleTimeout}ms. Last output:\n${stderrOutput.slice(-500)}`));
-        return;
-      }
-    }, 500);
-  });
-
-  console.log(`Server ready at ${url}`);
-  return serverProcess;
-}
-
-export function killServer(serverProcess: ChildProcess | null): void {
-  if (serverProcess && !serverProcess.killed) {
-    console.log('Stopping server...');
-    serverProcess.kill('SIGTERM');
-  }
-}
 
 async function handleInteractiveError(
   page: Page,
@@ -1171,7 +894,6 @@ export const runWebTest = async (
   process.env.INTELLITESTER_TRACK_FILE = fileTracking.trackFile;
 
   // Start webServer if configured
-  let serverProcess: ChildProcess | null = null;
   if (options.webServer) {
     const requiresTrackingEnv = Boolean(
       test.config?.appwrite?.cleanup || test.config?.appwrite?.cleanupOnFailure
@@ -1182,13 +904,13 @@ export const runWebTest = async (
     if (requiresTrackingEnv && options.webServer.reuseExistingServer !== false) {
       console.log('[Intellitester] Appwrite cleanup enabled; restarting server to inject tracking env.');
     }
-    serverProcess = await startWebServer(webServerConfig);
+    await webServerManager.start(webServerConfig);
   }
 
   // Handle Ctrl+C and termination signals
   const cleanup = () => {
     trackingServer.stop();
-    killServer(serverProcess);
+    webServerManager.kill();
     void fileTracking.stop();
     delete process.env.INTELLITESTER_TRACK_FILE;
     process.exit(1);
@@ -1572,7 +1294,7 @@ export const runWebTest = async (
     trackingServer.stop();
 
     // Stop webServer if it was started
-    killServer(serverProcess);
+    await webServerManager.stop();
   }
 
   return {

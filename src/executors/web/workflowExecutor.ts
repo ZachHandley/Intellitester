@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { type ChildProcess } from 'node:child_process';
 
 import {
   chromium,
@@ -26,7 +25,8 @@ import type { TestContext } from '../../integrations/appwrite/types';
 import { startTrackingServer, type TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
 import { track as trackResource } from '../../integration/index.js';
 import type { TrackedResource as IntegrationTrackedResource } from '../../integration/index.js';
-import { startWebServer, killServer, type BrowserName, type StepResult, type WebServerConfig } from './playwrightExecutor';
+import { type BrowserName, type StepResult } from './playwrightExecutor';
+import { webServerManager, type WebServerConfig } from './webServerManager.js';
 import type { AIConfig } from '../../ai/types';
 import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js';
 import type { CleanupConfig } from '../../core/cleanup/types.js';
@@ -1251,7 +1251,6 @@ export async function runWorkflow(
   process.env.INTELLITESTER_TRACK_FILE = fileTracking.trackFile;
 
   // 3. Start web server if configured (workflow config takes precedence over global)
-  let serverProcess: ChildProcess | null = null;
   const webServerConfig = workflow.config?.webServer ?? options.webServer;
   if (webServerConfig) {
     try {
@@ -1266,7 +1265,7 @@ export async function runWorkflow(
       if (requiresTrackingEnv && webServerConfig.reuseExistingServer !== false) {
         console.log('[Intellitester] Appwrite cleanup enabled; restarting server to inject tracking env.');
       }
-      serverProcess = await startWebServer({
+      await webServerManager.start({
         ...effectiveWebServerConfig,
         workdir: path.resolve(serverCwd, effectiveWebServerConfig.workdir ?? effectiveWebServerConfig.cwd ?? '.'),
       });
@@ -1280,7 +1279,7 @@ export async function runWorkflow(
   // Handle cleanup on Ctrl+C
   const signalCleanup = async () => {
     console.log('\n\nInterrupted - cleaning up...');
-    killServer(serverProcess);
+    webServerManager.kill(); // Synchronous kill for signal handlers
     if (trackingServer) await trackingServer.stop();
     await fileTracking.stop();
     delete process.env.INTELLITESTER_TRACK_FILE;
@@ -1462,7 +1461,7 @@ export async function runWorkflow(
     await browser.close();
 
     // Stop servers
-    killServer(serverProcess);
+    await webServerManager.stop();
     if (trackingServer) {
       await trackingServer.stop();
     }

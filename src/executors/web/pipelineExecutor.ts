@@ -1,6 +1,5 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import type { ChildProcess } from 'node:child_process';
 
 import {
   chromium,
@@ -27,7 +26,8 @@ import {
 } from './workflowExecutor';
 import { createTestContext } from '../../integrations/appwrite';
 import { startTrackingServer, type TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
-import { startWebServer, killServer, type BrowserName } from './playwrightExecutor';
+import { type BrowserName } from './playwrightExecutor';
+import { webServerManager } from './webServerManager.js';
 import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js';
 import type { CleanupConfig } from '../../core/cleanup/types.js';
 
@@ -231,7 +231,6 @@ export async function runPipeline(
   process.env.INTELLITESTER_TRACK_FILE = fileTracking.trackFile;
 
   // 4. Start web server if configured
-  let serverProcess: ChildProcess | null = null;
   if (pipeline.config?.webServer) {
     try {
       const requiresTrackingEnv = Boolean(
@@ -243,7 +242,7 @@ export async function runPipeline(
       if (requiresTrackingEnv && pipeline.config.webServer.reuseExistingServer !== false) {
         console.log('[Intellitester] Appwrite cleanup enabled; restarting server to inject tracking env.');
       }
-      serverProcess = await startWebServer({
+      await webServerManager.start({
         ...effectiveWebServerConfig,
         workdir: path.resolve(pipelineDir, effectiveWebServerConfig.workdir ?? effectiveWebServerConfig.cwd ?? '.'),
       });
@@ -257,7 +256,7 @@ export async function runPipeline(
   // 5. Handle cleanup on Ctrl+C
   const signalCleanup = async () => {
     console.log('\n\nInterrupted - cleaning up...');
-    killServer(serverProcess);
+    webServerManager.kill();
     if (trackingServer) await trackingServer.stop();
     await fileTracking.stop();
     delete process.env.INTELLITESTER_TRACK_FILE;
@@ -559,7 +558,7 @@ export async function runPipeline(
     await browser.close();
 
     // Stop servers
-    killServer(serverProcess);
+    await webServerManager.stop();
     if (trackingServer) {
       await trackingServer.stop();
     }

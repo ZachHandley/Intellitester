@@ -114,17 +114,22 @@ const buildAndPreview = async (
   const buildCmd = previewConfig.build?.command || `${pm} run build`;
   const [buildExec, ...buildArgs] = buildCmd.split(' ');
 
-  // Get preview command - validate it exists if using default
+  // Get preview command - check multiple sources in priority order
   let previewCmd: string;
   if (previewConfig.preview?.command) {
+    // Explicit preview command configured
     previewCmd = previewConfig.preview.command;
+  } else if (config?.webServer?.command) {
+    // Use webServer.command as fallback
+    previewCmd = config.webServer.command;
   } else {
+    // Fall back to package.json scripts
     const availableScript = await getAvailableScript(cwd, 'preview', 'dev');
     if (!availableScript) {
       throw new Error(
         `No preview command configured and no "preview" or "dev" script found in package.json.\n` +
-        `Either add a script to package.json, or configure preview.preview.command in intellitester.yaml:\n\n` +
-        `preview:\n  preview:\n    command: "${pm} run start"  # or your preview command`
+        `Either add a script to package.json, or configure in intellitester.yaml:\n\n` +
+        `webServer:\n  command: "${pm} run dev"  # or your preview command`
       );
     }
     if (availableScript === 'dev') {

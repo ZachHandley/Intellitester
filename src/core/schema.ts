@@ -301,7 +301,8 @@ const webServerSchema = z
     port: z.number().int().positive().optional().describe('Port number for the web server'),
     reuseExistingServer: z.boolean().default(true).describe('Use existing server if already running at the specified URL'),
     timeout: z.number().int().positive().default(30000).describe('Timeout in milliseconds to wait for server to become available'),
-    cwd: z.string().optional().describe('Working directory for the server command'),
+    workdir: z.string().optional().describe('Working directory for the server command'),
+    cwd: z.string().optional().describe('Deprecated: use workdir instead'),
   })
   .describe('Configuration for starting a web server before running tests')
   .refine((config) => config.command || config.auto || config.static, {

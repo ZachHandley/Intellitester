@@ -53,11 +53,12 @@ const resolveBrowserName = (input: string): BrowserName => {
 /**
  * Detect package manager from lockfile.
  */
-const detectPackageManager = async (): Promise<'deno' | 'pnpm' | 'npm' | 'yarn' | 'bun'> => {
-  if (await fileExists('deno.lock')) return 'deno';
-  if (await fileExists('pnpm-lock.yaml')) return 'pnpm';
-  if (await fileExists('bun.lockb') || await fileExists('bun.lock')) return 'bun';
-  if (await fileExists('yarn.lock')) return 'yarn';
+const detectPackageManager = async (cwd?: string): Promise<'deno' | 'pnpm' | 'npm' | 'yarn' | 'bun'> => {
+  const check = (file: string) => fileExists(cwd ? path.join(cwd, file) : file);
+  if (await check('deno.lock')) return 'deno';
+  if (await check('pnpm-lock.yaml')) return 'pnpm';
+  if (await check('bun.lockb') || await check('bun.lock')) return 'bun';
+  if (await check('yarn.lock')) return 'yarn';
   return 'npm';
 };
 
@@ -107,7 +108,7 @@ const buildAndPreview = async (
   cwd: string,
   freshBuild = false
 ): Promise<{ previewProcess: ChildProcess | null; cleanup: () => void }> => {
-  const pm = await detectPackageManager();
+  const pm = await detectPackageManager(cwd);
   const previewConfig = config?.preview || {};
 
   // Get build command (default: pm run build)
@@ -143,11 +144,10 @@ const buildAndPreview = async (
   const previewUrl = previewConfig.url || config?.webServer?.url || config?.platforms?.web?.baseUrl || 'http://localhost:4321';
   const timeout = previewConfig.timeout || 60000;
 
-  // Check if build artifacts exist
-  const fs = await import('fs/promises');
+  // Check if build artifacts exist in cwd
   const buildDirs = ['dist', 'build', '.next', '.output', '.astro'];
   const hasArtifacts = await Promise.all(
-    buildDirs.map(dir => fs.access(dir).then(() => true).catch(() => false))
+    buildDirs.map(dir => fs.access(path.join(cwd, dir)).then(() => true).catch(() => false))
   );
   const artifactsExist = hasArtifacts.some(Boolean);
 

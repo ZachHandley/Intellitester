@@ -62,6 +62,24 @@ const detectPackageManager = async (): Promise<'deno' | 'pnpm' | 'npm' | 'yarn' 
 };
 
 /**
+ * Check if a script exists in package.json and return the first available one.
+ */
+const getAvailableScript = async (cwd: string, ...scriptNames: string[]): Promise<string | null> => {
+  try {
+    const pkgJsonPath = path.join(cwd, 'package.json');
+    const pkgJson = await fs.readFile(pkgJsonPath, 'utf8');
+    const pkg = JSON.parse(pkgJson);
+    if (!pkg.scripts) return null;
+    for (const name of scriptNames) {
+      if (name in pkg.scripts) return name;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Run a command and wait for it to complete.
  */
 const execCommand = async (cmd: string, args: string[], cwd: string): Promise<void> => {
@@ -96,8 +114,24 @@ const buildAndPreview = async (
   const buildCmd = previewConfig.build?.command || `${pm} run build`;
   const [buildExec, ...buildArgs] = buildCmd.split(' ');
 
-  // Get preview command (default: pm run preview)
-  const previewCmd = previewConfig.preview?.command || `${pm} run preview`;
+  // Get preview command - validate it exists if using default
+  let previewCmd: string;
+  if (previewConfig.preview?.command) {
+    previewCmd = previewConfig.preview.command;
+  } else {
+    const availableScript = await getAvailableScript(cwd, 'preview', 'dev');
+    if (!availableScript) {
+      throw new Error(
+        `No preview command configured and no "preview" or "dev" script found in package.json.\n` +
+        `Either add a script to package.json, or configure preview.preview.command in intellitester.yaml:\n\n` +
+        `preview:\n  preview:\n    command: "${pm} run start"  # or your preview command`
+      );
+    }
+    if (availableScript === 'dev') {
+      console.log(`No "preview" script found, falling back to "dev" script`);
+    }
+    previewCmd = `${pm} run ${availableScript}`;
+  }
   const [previewExec, ...previewArgs] = previewCmd.split(' ');
 
   // Get preview URL (default from webServer or baseUrl)

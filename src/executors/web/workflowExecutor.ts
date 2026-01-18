@@ -43,6 +43,8 @@ export interface WorkflowOptions {
   trackDir?: string;
   baseUrl?: string; // Fallback baseUrl from pipeline config
   testSizes?: string[]; // Viewport sizes to test (e.g., ['xs', 'md', 'xl'] or ['320x568', '1920x1080'])
+  skipTrackingSetup?: boolean; // If true, reuse tracking setup from CLI (e.g., --preview mode)
+  skipWebServerStart?: boolean; // If true, reuse web server started by CLI
 }
 
 export interface WorkflowWithContextOptions extends WorkflowOptions {
@@ -1228,66 +1230,88 @@ export async function runWorkflow(
   const testStartTime = new Date().toISOString();
   const cleanupConfig = inferCleanupConfig(workflow.config);
 
-  // 1. Start tracking server
-  let trackingServer: TrackingServer | null = null;
-  try {
-    trackingServer = await startTrackingServer({ port: 0 });
-    console.log(`Tracking server started on port ${trackingServer.port}`);
-  } catch (error) {
-    console.warn('Failed to start tracking server:', error);
-  }
+  // 1. Check if tracking is already set up by CLI (e.g., --preview mode)
+  const trackingAlreadySetUp = options.skipTrackingSetup ||
+    (process.env.INTELLITESTER_TRACKING_OWNER === 'cli');
 
-  // 2. Set environment variables for the app under test
-  if (trackingServer) {
-    process.env.INTELLITESTER_SESSION_ID = sessionId;
-    process.env.INTELLITESTER_TRACK_URL = `http://localhost:${trackingServer.port}`;
+  let ownsTracking = false;
+  let trackingServer: TrackingServer | null = null;
+  let fileTracking: { trackFile: string; stop: () => Promise<void> } | null = null;
+
+  if (!trackingAlreadySetUp) {
+    ownsTracking = true;
+    // Start tracking server
+    try {
+      trackingServer = await startTrackingServer({ port: 0 });
+      console.log(`Tracking server started on port ${trackingServer.port}`);
+    } catch (error) {
+      console.warn('Failed to start tracking server:', error);
+    }
+
+    // 2. Set environment variables for the app under test
+    if (trackingServer) {
+      process.env.INTELLITESTER_SESSION_ID = sessionId;
+      process.env.INTELLITESTER_TRACK_URL = `http://localhost:${trackingServer.port}`;
+    }
+    fileTracking = await initFileTracking({
+      sessionId,
+      cleanupConfig,
+      trackDir: options.trackDir,
+      providerConfig: workflow.config?.appwrite ? {
+        provider: 'appwrite',
+        endpoint: workflow.config.appwrite.endpoint,
+        projectId: workflow.config.appwrite.projectId,
+        apiKey: workflow.config.appwrite.apiKey,
+      } : undefined,
+    });
+    process.env.INTELLITESTER_TRACK_FILE = fileTracking.trackFile;
+  } else {
+    console.log('Using existing tracking setup (owned by CLI)');
   }
-  const fileTracking = await initFileTracking({
-    sessionId,
-    cleanupConfig,
-    trackDir: options.trackDir,
-    providerConfig: workflow.config?.appwrite ? {
-      provider: 'appwrite',
-      endpoint: workflow.config.appwrite.endpoint,
-      projectId: workflow.config.appwrite.projectId,
-      apiKey: workflow.config.appwrite.apiKey,
-    } : undefined,
-  });
-  process.env.INTELLITESTER_TRACK_FILE = fileTracking.trackFile;
 
   // 3. Start web server if configured (workflow config takes precedence over global)
   const webServerConfig = workflow.config?.webServer ?? options.webServer;
-  if (webServerConfig) {
+  const skipWebServer = options.skipWebServerStart;
+
+  if (webServerConfig && !skipWebServer) {
     try {
       // Use workflow dir for workflow-defined webServer, process.cwd() for global config
       const serverCwd = workflow.config?.webServer ? workflowDir : process.cwd();
+
+      // Only force restart if we own tracking AND user didn't explicitly set reuseExistingServer
       const requiresTrackingEnv = Boolean(
         workflow.config?.appwrite?.cleanup || workflow.config?.appwrite?.cleanupOnFailure
       );
-      const effectiveWebServerConfig = requiresTrackingEnv
-        ? { ...webServerConfig, reuseExistingServer: false }
-        : webServerConfig;
-      if (requiresTrackingEnv && webServerConfig.reuseExistingServer !== false) {
+      const userExplicitlySetReuse = webServerConfig.reuseExistingServer !== undefined;
+
+      let effectiveConfig = webServerConfig;
+      if (requiresTrackingEnv && !userExplicitlySetReuse && ownsTracking) {
+        effectiveConfig = { ...webServerConfig, reuseExistingServer: false };
         console.log('[Intellitester] Appwrite cleanup enabled; restarting server to inject tracking env.');
       }
+
       await webServerManager.start({
-        ...effectiveWebServerConfig,
-        workdir: path.resolve(serverCwd, effectiveWebServerConfig.workdir ?? effectiveWebServerConfig.cwd ?? '.'),
+        ...effectiveConfig,
+        workdir: path.resolve(serverCwd, effectiveConfig.workdir ?? effectiveConfig.cwd ?? '.'),
       });
     } catch (error) {
       console.error('Failed to start web server:', error);
       if (trackingServer) await trackingServer.stop();
       throw error;
     }
+  } else if (skipWebServer) {
+    console.log('Using existing web server (started by CLI)');
   }
 
-  // Handle cleanup on Ctrl+C
+  // Handle cleanup on Ctrl+C (only clean up resources we own)
   const signalCleanup = async () => {
     console.log('\n\nInterrupted - cleaning up...');
-    webServerManager.kill(); // Synchronous kill for signal handlers
-    if (trackingServer) await trackingServer.stop();
-    await fileTracking.stop();
-    delete process.env.INTELLITESTER_TRACK_FILE;
+    if (ownsTracking) {
+      if (!skipWebServer) webServerManager.kill(); // Synchronous kill for signal handlers
+      if (trackingServer) await trackingServer.stop();
+      if (fileTracking) await fileTracking.stop();
+      delete process.env.INTELLITESTER_TRACK_FILE;
+    }
     process.exit(1);
   };
   process.on('SIGINT', signalCleanup);
@@ -1415,7 +1439,12 @@ export async function runWorkflow(
       }
     }
 
-    await mergeFileTrackedResources(fileTracking.trackFile, executionContext.appwriteContext);
+    if (fileTracking) {
+      await mergeFileTrackedResources(fileTracking.trackFile, executionContext.appwriteContext);
+    } else if (process.env.INTELLITESTER_TRACK_FILE) {
+      // CLI owns tracking, use its track file
+      await mergeFileTrackedResources(process.env.INTELLITESTER_TRACK_FILE, executionContext.appwriteContext);
+    }
 
     // 8. Cleanup resources using the extensible cleanup system
     let cleanupResult: { success: boolean; deleted: string[]; failed: string[] } | undefined;
@@ -1531,16 +1560,21 @@ export async function runWorkflow(
     await browserContext.close();
     await browser.close();
 
-    // Stop servers
-    await webServerManager.stop();
-    if (trackingServer) {
-      await trackingServer.stop();
-    }
-    await fileTracking.stop();
+    // Only clean up resources we own
+    if (ownsTracking) {
+      // Stop servers
+      if (!skipWebServer) await webServerManager.stop();
+      if (trackingServer) {
+        await trackingServer.stop();
+      }
+      if (fileTracking) {
+        await fileTracking.stop();
+      }
 
-    // Clean up env vars
-    delete process.env.INTELLITESTER_SESSION_ID;
-    delete process.env.INTELLITESTER_TRACK_URL;
-    delete process.env.INTELLITESTER_TRACK_FILE;
+      // Clean up env vars
+      delete process.env.INTELLITESTER_SESSION_ID;
+      delete process.env.INTELLITESTER_TRACK_URL;
+      delete process.env.INTELLITESTER_TRACK_FILE;
+    }
   }
 }

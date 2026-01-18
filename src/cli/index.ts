@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 // Load .env from current working directory
 dotenv.config();
 
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -22,6 +23,7 @@ import { loadFailedCleanups, removeFailedCleanup } from '../core/cleanup/persist
 import { loadCleanupHandlers, executeCleanup } from '../core/cleanup/index.js';
 import type { CleanupConfig } from '../core/cleanup/types.js';
 import { validateEnvVars } from './envHelper';
+import { startTrackingServer, initFileTracking, type TrackingServer } from '../tracking';
 
 const CONFIG_FILENAME = 'intellitester.config.yaml';
 const GUIDE_FILENAME = 'intellitester_guide.md';
@@ -1533,6 +1535,8 @@ interface RunOptions {
   sessionId?: string;
   trackDir?: string;
   testSizes?: string[];
+  skipTrackingSetup?: boolean;
+  skipWebServerStart?: boolean;
 }
 
 const runWorkflowCommand = async (file: string, options: RunOptions): Promise<void> => {
@@ -1769,12 +1773,17 @@ const main = async (): Promise<void> => {
       testSizes?: string;
     }) => {
       let previewCleanup: (() => void) | null = null;
+      let trackingServer: TrackingServer | null = null;
+      let fileTrackingCleanup: (() => Promise<void>) | null = null;
+      let cliOwnsTracking = false;
 
       try {
         // Resolve browser alias
         const browser = resolveBrowserName(options.browser || 'chrome');
 
         // Handle preview/prod mode
+        const sessionId = options.sessionId ?? crypto.randomUUID();
+
         if (options.preview || options.prod) {
           const hasConfigFile = await fileExists(CONFIG_FILENAME);
           const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
@@ -1791,6 +1800,41 @@ const main = async (): Promise<void> => {
               console.log(`Loaded .env from ${previewCwd}`);
             }
           }
+
+          // Set up tracking env vars BEFORE starting preview server so it inherits them
+          const requiresTracking = Boolean(config?.appwrite?.cleanup || config?.appwrite?.cleanupOnFailure);
+          if (requiresTracking) {
+            // Always set session ID for tracking (sessionId already prefers options.sessionId if provided)
+            process.env.INTELLITESTER_SESSION_ID = sessionId;
+
+            // Start tracking server (optional - file tracking is backup)
+            try {
+              trackingServer = await startTrackingServer({ port: 0 });
+              process.env.INTELLITESTER_TRACK_URL = `http://localhost:${trackingServer.port}`;
+              console.log(`Tracking server started on port ${trackingServer.port}`);
+            } catch (error) {
+              console.warn('Failed to start tracking server:', error);
+            }
+
+            // File tracking is always initialized as backup/primary
+            const fileTracking = await initFileTracking({
+              sessionId,
+              trackDir: options.trackDir,
+              providerConfig: config?.appwrite ? {
+                provider: 'appwrite',
+                endpoint: config.appwrite.endpoint,
+                projectId: config.appwrite.projectId,
+                apiKey: config.appwrite.apiKey,
+              } : undefined,
+            });
+            process.env.INTELLITESTER_TRACK_FILE = fileTracking.trackFile;
+            fileTrackingCleanup = fileTracking.stop;
+            
+            // Mark CLI as owner of tracking resources
+            process.env.INTELLITESTER_TRACKING_OWNER = 'cli';
+            cliOwnsTracking = true;
+          }
+
           const { cleanup } = await buildAndPreview(config, previewCwd, options.freshBuild);
           previewCleanup = cleanup;
         }
@@ -1806,9 +1850,12 @@ const main = async (): Promise<void> => {
           browser,
           interactive: options.interactive,
           debug: options.debug,
-          sessionId: options.sessionId,
+          sessionId,  // Use the sessionId we generated/set for tracking
           trackDir: options.trackDir,
           testSizes,
+          // When CLI sets up tracking, tell executors to skip their own setup
+          skipTrackingSetup: cliOwnsTracking,
+          skipWebServerStart: cliOwnsTracking,
         };
 
         // If no file specified, auto-discover tests
@@ -2003,6 +2050,16 @@ const main = async (): Promise<void> => {
         // Cleanup preview server if running (for normal exit)
         if (previewCleanup) {
           previewCleanup();
+        }
+        
+        // Cleanup tracking resources if CLI owns them
+        if (process.env.INTELLITESTER_TRACKING_OWNER === 'cli') {
+          if (trackingServer) await trackingServer.stop();
+          if (fileTrackingCleanup) await fileTrackingCleanup();
+          delete process.env.INTELLITESTER_TRACKING_OWNER;
+          delete process.env.INTELLITESTER_SESSION_ID;
+          delete process.env.INTELLITESTER_TRACK_URL;
+          delete process.env.INTELLITESTER_TRACK_FILE;
         }
       }
     });

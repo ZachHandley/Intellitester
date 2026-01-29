@@ -3,7 +3,7 @@ import { z } from 'zod';
 const nonEmptyString = z.string().trim().min(1, 'Value cannot be empty');
 
 // Transform empty strings to undefined for optional fields
-const optionalString = z.preprocess(
+const _optionalString = z.preprocess(
   (val) => (typeof val === 'string' && val.trim() === '' ? undefined : val),
   z.string().trim().optional()
 );

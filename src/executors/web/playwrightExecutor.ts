@@ -17,7 +17,7 @@ import { interpolateVariables } from '../../core/interpolation';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import { AppwriteTestClient, createTestContext, APPWRITE_PATTERNS, APPWRITE_UPDATE_PATTERNS, APPWRITE_DELETE_PATTERNS, type TrackedResource } from '../../integrations/appwrite';
-import { getBrowserLaunchOptions, VIEWPORT_SIZES, parseViewportSize, type ViewportSize } from './browserOptions.js';
+import { getBrowserLaunchOptions, getBrowserTimingConfig, parseViewportSize } from './browserOptions.js';
 import { getAISuggestion } from '../../ai/errorHelper';
 import { TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
 import { track as trackResource } from '../../integration/index.js';
@@ -178,13 +178,13 @@ const runNavigate = async (
   await page.goto(target);
 };
 
-const runTap = async (page: Page, locator: Locator): Promise<void> => {
+const runTap = async (page: Page, locator: Locator, browserName?: BrowserName): Promise<void> => {
   const handle = resolveLocator(page, locator);
   await handle.click();
-  // Wait for network to settle after click (handles 302 redirect cookie timing)
-  await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {
-    // Timeout is fine - proceed anyway
-  });
+
+  // Wait for page to stabilize after click (handles 302 redirect cookie timing, SPA navigation)
+  const timing = getBrowserTimingConfig(browserName ?? 'chromium');
+  await waitForPageStable(page, timing.networkIdleTimeout);
 };
 
 const runInput = async (
@@ -230,13 +230,36 @@ const waitForCondition = async (
   checkFn: () => Promise<boolean>,
   timeout: number,
   errorMessage: string,
+  browserName?: BrowserName,
 ): Promise<void> => {
+  // Firefox benefits from slightly longer timeouts and slower polling
+  const effectiveTimeout = browserName === 'firefox' ? Math.round(timeout * 1.5) : timeout;
+  const pollInterval = browserName === 'firefox' ? 150 : 100;
+
   const start = Date.now();
-  while (Date.now() - start < timeout) {
+  while (Date.now() - start < effectiveTimeout) {
     if (await checkFn()) return;
-    await new Promise((r) => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, pollInterval));
   }
   throw new Error(errorMessage);
+};
+
+/**
+ * Cascading wait strategy that works reliably across all browsers:
+ * 1. Wait for domcontentloaded (fast, reliable baseline)
+ * 2. Then wait for networkidle (handles SPA data loading)
+ * 3. If networkidle times out, continue anyway
+ */
+const waitForPageStable = async (
+  page: Page,
+  networkIdleTimeout: number,
+): Promise<void> => {
+  // Step 1: Wait for DOM to be ready (fast, reliable)
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+
+  // Step 2: Wait for network to settle (handles SPAs loading data)
+  // If this times out, we proceed anyway since DOM is ready
+  await page.waitForLoadState('networkidle', { timeout: networkIdleTimeout }).catch(() => {});
 };
 
 const runScroll = async (
@@ -259,13 +282,13 @@ const runScreenshot = async (
   name: string | undefined,
   screenshotDir: string,
   stepIndex: number,
+  browserName?: BrowserName,
 ): Promise<string> => {
   await ensureScreenshotDir(screenshotDir);
 
-  // Wait for network to be idle (or max 5 seconds)
-  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-    // Timeout is fine - proceed with screenshot anyway
-  });
+  // Wait for page to stabilize before screenshot
+  const timing = getBrowserTimingConfig(browserName ?? 'chromium');
+  await waitForPageStable(page, timing.screenshotNetworkIdleTimeout);
 
   const filename = name ?? `step-${stepIndex + 1}.png`;
   const filePath = path.join(screenshotDir, filename);
@@ -363,9 +386,10 @@ async function executeActionWithRetry(
     debugMode: boolean;
     interactive: boolean;
     aiConfig?: import('../../ai/types').AIConfig;
+    browserName?: BrowserName;
   },
 ): Promise<void> {
-  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig } = options;
+  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName } = options;
   const buildTrackPayload = (stepExtras?: Record<string, unknown>): IntegrationTrackedResource | null => {
     if (!('track' in action)) return null;
     const track = (action as { track?: Record<string, unknown> }).track;
@@ -401,7 +425,7 @@ async function executeActionWithRetry(
             console.log(`[DEBUG] Tapping element:`, action.target);
           }
           await checkErrorIf(page, action.target, action.errorIf);
-          await runTap(page, action.target);
+          await runTap(page, action.target, browserName);
           break;
         }
         case 'input': {
@@ -609,6 +633,7 @@ async function executeActionWithRetry(
                 () => handle.isEnabled(),
                 timeout,
                 `Element did not become enabled within ${timeout}ms`,
+                browserName,
               );
               break;
             case 'disabled':
@@ -616,6 +641,7 @@ async function executeActionWithRetry(
                 () => handle.isDisabled(),
                 timeout,
                 `Element did not become disabled within ${timeout}ms`,
+                browserName,
               );
               break;
           }
@@ -672,6 +698,7 @@ async function executeActionWithRetry(
               debugMode,
               interactive,
               aiConfig,
+              browserName,
             });
           }
           break;
@@ -751,6 +778,7 @@ async function executeActionWithRetry(
                 debugMode,
                 interactive,
                 aiConfig,
+                browserName,
               });
             }
           } else {
@@ -802,6 +830,7 @@ async function executeActionWithRetry(
                   debugMode,
                   interactive,
                   aiConfig,
+                  browserName,
                 });
               }
             }
@@ -1246,7 +1275,7 @@ export const runWebTest = async (
       return payload;
     };
 
-    let sizeTestFailed = false;
+    let _sizeTestFailed = false;
 
     try {
       for (const [index, action] of test.steps.entries()) {
@@ -1298,7 +1327,7 @@ export const runWebTest = async (
             const screenshotName = sizesToTest.length > 1 && ssAction.name
               ? ssAction.name.replace(/\.png$/, `-${size}.png`)
               : ssAction.name;
-            const screenshotPath = await runScreenshot(page, screenshotName, screenshotDir, index);
+            const screenshotPath = await runScreenshot(page, screenshotName, screenshotDir, index, browserName);
             sizeResults.push({ action, status: 'passed', screenshotPath });
             const trackedPayload = buildTrackPayload(action, index, { screenshotPath });
             if (trackedPayload) {
@@ -1315,13 +1344,14 @@ export const runWebTest = async (
             debugMode,
             interactive,
             aiConfig: options.aiConfig,
+            browserName,
           });
 
           sizeResults.push({ action, status: 'passed' });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           sizeResults.push({ action, status: 'failed', error: message });
-          sizeTestFailed = true;
+          _sizeTestFailed = true;
           overallFailed = true;
           // Don't throw - continue to next viewport size if there is one
           break;

@@ -14,7 +14,7 @@ import { interpolateVariables } from '../../core/interpolation';
 import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
-import { getBrowserLaunchOptions, VIEWPORT_SIZES, parseViewportSize, type ViewportSize } from './browserOptions.js';
+import { getBrowserLaunchOptions, parseViewportSize } from './browserOptions.js';
 import {
   createTestContext,
   APPWRITE_PATTERNS,
@@ -222,9 +222,10 @@ async function runTestInWorkflow(
             if (debugMode) console.log(`  [DEBUG] Tapping element:`, action.target);
             const handle = resolveLocator(action.target);
             await handle.click();
-            // Wait for network to settle after click (handles 302 redirect cookie timing)
+            // Cascading wait: domcontentloaded first (reliable), then networkidle (handles SPAs)
+            await page.waitForLoadState('domcontentloaded').catch(() => {});
             await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {
-              // Timeout is fine - proceed anyway
+              // Timeout is fine - proceed anyway since DOM is ready
             });
             break;
           }
@@ -320,6 +321,9 @@ async function runTestInWorkflow(
           }
           case 'screenshot': {
             const ssAction = action as Extract<Action, { type: 'screenshot' }>;
+            // Cascading wait for page stability before screenshot
+            await page.waitForLoadState('domcontentloaded').catch(() => {});
+            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
             const waitBefore = ssAction.waitBefore ?? 500;
             if (waitBefore > 0) {
               await page.waitForTimeout(waitBefore);
@@ -515,6 +519,9 @@ async function runTestInWorkflow(
               // This is a simplified version - complex nesting would require refactoring
               switch (nestedAction.type) {
                 case 'screenshot': {
+                  // Cascading wait for page stability
+                  await page.waitForLoadState('domcontentloaded').catch(() => {});
+                  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
                   const filename = nestedAction.name ?? `conditional-step.png`;
                   const filePath = path.join(screenshotDir, filename);
                   await page.screenshot({ path: filePath, fullPage: true });
@@ -603,6 +610,9 @@ async function runTestInWorkflow(
                     case 'tap': {
                       const nestedHandle = resolveLocator(nestedAction.target);
                       await nestedHandle.click();
+                      // Cascading wait for page stability after click
+                      await page.waitForLoadState('domcontentloaded').catch(() => {});
+                      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
                       break;
                     }
                     case 'input': {
@@ -612,6 +622,9 @@ async function runTestInWorkflow(
                       break;
                     }
                     case 'screenshot': {
+                      // Cascading wait for page stability
+                      await page.waitForLoadState('domcontentloaded').catch(() => {});
+                      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
                       const nestedSsAction = nestedAction as Extract<Action, { type: 'screenshot' }>;
                       const nestedWaitBefore = nestedSsAction.waitBefore ?? 500;
                       if (nestedWaitBefore > 0) {
@@ -1358,7 +1371,7 @@ export async function runWorkflow(
   // Track all results across viewport sizes
   const allTestResults: WorkflowTestResult[] = [];
   let anyFailed = false;
-  let lastCleanupResult: { success: boolean; deleted: string[]; failed: string[] } | undefined;
+  let _lastCleanupResult: { success: boolean; deleted: string[]; failed: string[] } | undefined;
 
   // Create browser context (will be replaced for each size)
   let browserContext = await browser.newContext({

@@ -45,6 +45,39 @@ export function parseViewportSize(size: string): { width: number; height: number
   return null;
 }
 
+/**
+ * Browser-specific timing configuration for wait strategies.
+ * Different browsers have varying network idle detection behavior.
+ */
+export interface BrowserTimingConfig {
+  networkIdleTimeout: number;
+  screenshotNetworkIdleTimeout: number;
+}
+
+/**
+ * Get browser-specific timing configuration.
+ * Firefox needs longer timeouts as its network idle detection can be inconsistent.
+ */
+export function getBrowserTimingConfig(browser: BrowserName): BrowserTimingConfig {
+  switch (browser) {
+    case 'firefox':
+      return {
+        networkIdleTimeout: 15000,           // 50% longer for Firefox
+        screenshotNetworkIdleTimeout: 8000,
+      };
+    case 'webkit':
+      return {
+        networkIdleTimeout: 12000,
+        screenshotNetworkIdleTimeout: 6000,
+      };
+    default: // chromium
+      return {
+        networkIdleTimeout: 10000,
+        screenshotNetworkIdleTimeout: 5000,
+      };
+  }
+}
+
 export interface BrowserLaunchOptions {
   headless: boolean;
   browser?: BrowserName;
@@ -107,6 +140,13 @@ export function getBrowserLaunchOptions(options: BrowserLaunchOptions) {
         // Disable hardware acceleration overhead in headless
         'layers.acceleration.disabled': true,
         'gfx.webrender.all': false,
+
+        // Disable speculative network activity that interferes with networkidle detection
+        // These are prefetch/preconnect features, NOT actual workers or app functionality
+        'network.http.speculative-parallel-limit': 0,  // Disable speculative connections
+        'network.predictor.enabled': false,            // Disable network predictor
+        'network.prefetch-next': false,                // Disable link prefetching
+        'network.dns.disablePrefetch': true,           // Disable DNS prefetch
       },
     };
   }

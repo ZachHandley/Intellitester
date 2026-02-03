@@ -9,3 +9,4 @@ npm-debug.log*
 pnpm-debug.log*
 yarn-error.log*
 .claude
+.env

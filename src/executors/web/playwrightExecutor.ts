@@ -20,6 +20,7 @@ import type { Email } from '../../integrations/email/types';
 import { AppwriteTestClient, createTestContext, APPWRITE_PATTERNS, APPWRITE_UPDATE_PATTERNS, APPWRITE_DELETE_PATTERNS, type TrackedResource } from '../../integrations/appwrite';
 import { getBrowserLaunchOptions, getBrowserTimingConfig, parseViewportSize } from './browserOptions.js';
 import { getAISuggestion } from '../../ai/errorHelper';
+import { runHealingAgent, type HealingContext } from '../../ai/healingAgent';
 import { TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
 import { track as trackResource } from '../../integration/index.js';
 import type { TrackedResource as IntegrationTrackedResource } from '../../integration/index.js';
@@ -47,6 +48,11 @@ export interface WebRunOptions {
   skipTrackingSetup?: boolean;
   /** Skip web server start (CLI already owns it) */
   skipWebServerStart?: boolean;
+  /** AI-assisted healing configuration */
+  healing?: {
+    enabled: boolean;
+    maxAttempts?: number;
+  };
 }
 
 export interface StepResult {
@@ -54,6 +60,7 @@ export interface StepResult {
   status: 'passed' | 'failed';
   error?: string;
   screenshotPath?: string;
+  logOutput?: string;
 }
 
 export interface WebRunResult {
@@ -450,6 +457,10 @@ async function handleInteractiveError(
   return response.action || 'abort';
 }
 
+interface ActionExtras {
+  logOutput?: string;
+}
+
 async function executeActionWithRetry(
   page: Page,
   action: Action,
@@ -462,9 +473,15 @@ async function executeActionWithRetry(
     interactive: boolean;
     aiConfig?: import('../../ai/types').AIConfig;
     browserName?: BrowserName;
+    healing?: {
+      enabled: boolean;
+      maxAttempts?: number;
+    };
   },
-): Promise<void> {
-  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName } = options;
+): Promise<ActionExtras> {
+  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing } = options;
+  const extras: ActionExtras = {};
+
   const buildTrackPayload = (stepExtras?: Record<string, unknown>): IntegrationTrackedResource | null => {
     if (!('track' in action)) return null;
     const track = (action as { track?: Record<string, unknown> }).track;
@@ -894,6 +911,58 @@ async function executeActionWithRetry(
           }
           break;
         }
+        case 'log': {
+          const logAction = action as Extract<Action, { type: 'log' }>;
+          const format = logAction.format ?? 'text';
+          let logOutput: string;
+
+          if (logAction.message) {
+            // Static message - interpolate variables
+            logOutput = interpolateVariables(logAction.message, context.variables);
+            console.log(`[LOG] ${logOutput}`);
+          } else if (logAction.eval) {
+            // JS expression evaluation
+            const interpolated = interpolateVariables(logAction.eval, context.variables);
+            try {
+              const result = await page.evaluate(interpolated);
+              logOutput = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+              console.log(`[LOG eval] ${logOutput}`);
+            } catch (evalError) {
+              logOutput = `[eval error] ${evalError instanceof Error ? evalError.message : String(evalError)}`;
+              console.log(`[LOG] ${logOutput}`);
+            }
+          } else if (logAction.target) {
+            // Element content extraction
+            const frameContext = getActionContext(page, logAction.frame);
+            const handle = resolveLocatorInContext(frameContext, logAction.target);
+
+            switch (format) {
+              case 'html':
+                logOutput = await handle.innerHTML();
+                break;
+              case 'json':
+                // Try to parse element's text as JSON and pretty-print
+                const text = await handle.textContent() ?? '';
+                try {
+                  logOutput = JSON.stringify(JSON.parse(text), null, 2);
+                } catch {
+                  logOutput = text;
+                }
+                break;
+              case 'text':
+              default:
+                logOutput = await handle.textContent() ?? '';
+                break;
+            }
+            console.log(`[LOG element] ${logOutput}`);
+          } else {
+            logOutput = '(no content)';
+          }
+
+          // Store log output in extras so it can be captured in reports
+          extras.logOutput = logOutput;
+          break;
+        }
         case 'fail': {
           const failAction = action as Extract<Action, { type: 'fail' }>;
           throw new Error(failAction.message);
@@ -1038,9 +1107,42 @@ async function executeActionWithRetry(
       }
 
       // Success - break out of retry loop
-      return;
+      return extras;
     } catch (err) {
       const error = err instanceof Error ? err : new Error(String(err));
+
+      // Try AI-assisted healing if enabled (before interactive mode)
+      if (healing?.enabled && aiConfig && hasTarget(action)) {
+        const maxAttempts = healing.maxAttempts ?? 3;
+        console.log(`\n🔧 Attempting AI-assisted healing (max ${maxAttempts} attempts)...`);
+
+        try {
+          const pageContent = await page.content();
+          const healingContext: HealingContext = {
+            page,
+            action,
+            error: error.message,
+            pageContent,
+          };
+
+          const healingResult = await runHealingAgent(healingContext, aiConfig, maxAttempts);
+
+          if (healingResult.success && healingResult.fixedAction) {
+            console.log(`✅ AI found fix: ${healingResult.explanation}`);
+
+            // Retry with fixed action (disable healing to prevent infinite loops)
+            const fixedExtras = await executeActionWithRetry(page, healingResult.fixedAction, index, {
+              ...options,
+              healing: { enabled: false },
+            });
+            return fixedExtras;
+          } else {
+            console.log(`❌ AI healing failed: ${healingResult.explanation}`);
+          }
+        } catch (healingError) {
+          console.log(`❌ AI healing error: ${healingError instanceof Error ? healingError.message : String(healingError)}`);
+        }
+      }
 
       if (interactive && aiConfig && hasTarget(action)) {
         const choice = await handleInteractiveError(page, action, error, screenshotDir, index, aiConfig);
@@ -1053,7 +1155,7 @@ async function executeActionWithRetry(
             continue;
           case 'skip':
             console.log('Skipping step...\n');
-            return;
+            return extras;
           case 'debug':
             console.log('Opening Playwright Inspector...\n');
             await page.pause();
@@ -1528,7 +1630,7 @@ export const runWebTest = async (
           }
 
           // Use the new executeActionWithRetry for all other actions
-          await executeActionWithRetry(page, action, index, {
+          const actionExtras = await executeActionWithRetry(page, action, index, {
             baseUrl: options.baseUrl ?? test.config?.web?.baseUrl,
             context: executionContext,
             screenshotDir,
@@ -1536,9 +1638,10 @@ export const runWebTest = async (
             interactive,
             aiConfig: options.aiConfig,
             browserName,
+            healing: options.healing,
           });
 
-          sizeResults.push({ action, status: 'passed' });
+          sizeResults.push({ action, status: 'passed', logOutput: actionExtras.logOutput });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           sizeResults.push({ action, status: 'failed', error: message });

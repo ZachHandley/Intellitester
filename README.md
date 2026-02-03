@@ -113,6 +113,79 @@ When execution pauses, you can:
 - Examine selectors and elements
 - Continue execution when ready
 
+### Log Action
+
+Use the `log` action to output debug information during test execution:
+
+```yaml
+steps:
+  # Log a static message
+  - type: log
+    message: "Starting checkout flow"
+
+  # Log JavaScript expression result
+  - type: log
+    eval: "document.title"
+
+  # Log element content
+  - type: log
+    target: { css: ".error-message" }
+    format: html  # text (default), html, or json
+
+  # Log inside iframe
+  - type: log
+    target: { css: ".stripe-error" }
+    frame: { css: "iframe[name='stripe']" }
+```
+
+## AI-Assisted Test Healing
+
+IntelliTester can automatically fix broken selectors using AI when tests fail.
+
+### Configuration
+
+Enable AI healing in `intellitester.config.yaml`:
+
+```yaml
+ai:
+  provider: groq  # anthropic, openai, ollama, groq, openrouter
+  model: llama-3.3-70b-versatile
+  apiKey: ${GROQ_API_KEY}
+  temperature: 0.2
+  maxTokens: 4096
+
+healing:
+  enabled: true
+  maxAttempts: 3  # 1-10
+```
+
+### Supported Providers
+
+| Provider | Env Variable | Example Model |
+|----------|--------------|---------------|
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-20241022` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4o` |
+| `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-3.5-sonnet` |
+| `ollama` | - | `llama3.2` |
+
+### How It Works
+
+When an action fails:
+1. AI analyzes the page HTML and error message
+2. Suggests a new selector (testId, text, role, or css)
+3. Validates the suggestion finds an element
+4. Retries the action with the fixed selector
+
+```
+[FAIL] tap - Element not found: testId="old-button-id"
+
+🔧 Attempting AI-assisted healing (max 3 attempts)...
+✅ AI found fix: {"text": "Submit Order"}
+
+[OK] tap
+```
+
 ## Iframe Targeting (frame)
 
 Target elements inside iframes using the `frame` property. Essential for payment forms (Stripe, PayPal), embedded widgets, and third-party integrations.

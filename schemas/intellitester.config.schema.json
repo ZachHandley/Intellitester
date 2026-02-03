@@ -35,7 +35,9 @@
           "enum": [
             "anthropic",
             "openai",
-            "ollama"
+            "ollama",
+            "groq",
+            "openrouter"
           ]
         },
         "model": {
@@ -172,12 +174,19 @@
       "additionalProperties": false
     },
     "healing": {
-      "description": "Self-healing test configuration",
+      "description": "AI-assisted test healing configuration",
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Enable self-healing capabilities",
+          "description": "Enable AI-assisted test healing on failures",
           "type": "boolean"
+        },
+        "maxAttempts": {
+          "description": "Maximum AI healing attempts per failure (default: 3)",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3
         },
         "strategies": {
           "description": "Healing strategies to use",

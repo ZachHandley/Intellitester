@@ -1,0 +1,39 @@
+name: Test Log Action
+platform: web
+
+steps:
+  # Navigate to a simple page
+  - type: navigate
+    value: https://example.com
+
+  # Test 1: Static message
+  - type: log
+    message: "Starting test - navigated to example.com"
+
+  # Test 2: JS expression evaluation
+  - type: log
+    eval: "document.title"
+
+  # Test 3: Extract page URL
+  - type: log
+    eval: "window.location.href"
+
+  # Test 4: Element text content
+  - type: log
+    target:
+      css: "h1"
+
+  # Test 5: Element HTML content
+  - type: log
+    target:
+      css: "p"
+    format: html
+
+  # Test 6: Check for specific text
+  - type: log
+    target:
+      text: "Example Domain"
+
+  # Final message
+  - type: log
+    message: "All log tests completed!"

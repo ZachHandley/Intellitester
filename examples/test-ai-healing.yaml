@@ -1,0 +1,19 @@
+name: Test AI Healing
+platform: web
+
+steps:
+  # Navigate to example.com
+  - type: navigate
+    value: https://example.com
+
+  # This selector is INTENTIONALLY WRONG - AI should heal it
+  # The actual element on example.com is an <a> tag with text "More information..."
+  - type: tap
+    target:
+      # Wrong testId - doesn't exist
+      testId: more-info-button
+      # AI should suggest: { text: "More information..." } or { css: "a" }
+
+  # If healing works, we should reach this
+  - type: log
+    message: "AI healing worked! Successfully clicked the link."

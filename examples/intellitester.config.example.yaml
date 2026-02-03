@@ -1,0 +1,49 @@
+# Example configuration for Intellitester
+# Copy this to intellitester.config.yaml and add your API keys
+
+# AI configuration - choose your provider
+ai:
+  # Options: anthropic, openai, ollama, groq, openrouter
+  provider: groq
+  model: llama-3.3-70b-versatile
+  # Use env var syntax for API keys
+  apiKey: ${GROQ_API_KEY}
+  temperature: 0.2
+  maxTokens: 4096
+
+# Alternative provider examples:
+#
+# OpenRouter (access to many models):
+#   provider: openrouter
+#   model: anthropic/claude-3.5-sonnet
+#   apiKey: ${OPENROUTER_API_KEY}
+#
+# OpenAI:
+#   provider: openai
+#   model: gpt-4o
+#   apiKey: ${OPENAI_API_KEY}
+#
+# Anthropic:
+#   provider: anthropic
+#   model: claude-3-5-sonnet-20241022
+#   apiKey: ${ANTHROPIC_API_KEY}
+#
+# Ollama (local):
+#   provider: ollama
+#   model: llama3.2
+#   baseUrl: http://localhost:11434
+
+# AI-assisted healing - automatically fix broken selectors
+healing:
+  enabled: true
+  maxAttempts: 3  # 1-10, how many AI attempts per failure
+
+# Platform defaults
+platforms:
+  web:
+    browser: chromium
+    headless: false
+
+defaults:
+  timeout: 30000
+  screenshots: on-failure

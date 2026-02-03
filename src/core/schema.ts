@@ -229,6 +229,19 @@ const waitForSelectorActionSchema = z.object({
   errorIf: errorIfSchema.optional(),
 }).describe('Wait for an element to reach a specific state');
 
+const logActionSchema = z.object({
+  type: z.literal('log'),
+  message: z.string().optional().describe('Static message to log (supports ${VAR_NAME} interpolation)'),
+  eval: z.string().optional().describe('JavaScript expression to evaluate in page context'),
+  target: LocatorSchema.optional().describe('Element to extract content from'),
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
+  format: z.enum(['text', 'html', 'json']).optional().describe('Output format for element content (default: text)'),
+}).describe('Log a message, evaluate JS, or extract element content for debugging')
+  .refine(
+    (action) => action.message || action.eval || action.target,
+    { message: 'log requires message, eval, or target' },
+  );
+
 const failActionSchema = z.object({
   type: z.literal('fail'),
   message: nonEmptyString.describe('Error message to display when test fails'),
@@ -259,6 +272,7 @@ const BaseActionSchema = z.discriminatedUnion('type', [
   appwriteVerifyEmailActionSchema,
   debugActionSchema,
   waitForSelectorActionSchema,
+  logActionSchema,
   failActionSchema,
 ]);
 
@@ -331,9 +345,10 @@ const appwriteConfigSchema = z.object({
 }).describe('Appwrite backend configuration');
 
 const healingSchema = z.object({
-  enabled: z.boolean().optional().describe('Enable self-healing capabilities'),
+  enabled: z.boolean().optional().describe('Enable AI-assisted test healing on failures'),
+  maxAttempts: z.number().int().min(1).max(10).default(3).describe('Maximum AI healing attempts per failure (default: 3)'),
   strategies: z.array(z.string().trim()).optional().describe('Healing strategies to use'),
-}).describe('Self-healing test configuration');
+}).describe('AI-assisted test healing configuration');
 
 const webServerSchema = z
   .object({
@@ -359,10 +374,10 @@ const aiSourceSchema = z.object({
 }).optional().describe('Source code directories for AI to analyze when generating tests');
 
 const aiConfigSchema = z.object({
-  provider: z.enum(['anthropic', 'openai', 'ollama']).describe('AI provider to use for test generation'),
+  provider: z.enum(['anthropic', 'openai', 'ollama', 'groq', 'openrouter']).describe('AI provider to use for test generation'),
   model: nonEmptyString.describe('Model name to use'),
-  apiKey: z.string().trim().optional().describe('API key for the AI provider'),
-  baseUrl: optionalUrl.describe('Base URL for the AI API (required for Ollama)'),
+  apiKey: z.string().trim().optional().describe('API key for the AI provider (supports ${ENV_VAR} syntax)'),
+  baseUrl: optionalUrl.describe('Base URL for the AI API (required for Ollama, auto-set for groq/openrouter)'),
   temperature: z.number().min(0).max(2).default(0.2).describe('Temperature for AI generation (0 = deterministic, 2 = very creative)'),
   maxTokens: z.number().int().positive().default(4096).describe('Maximum tokens for AI responses'),
   source: aiSourceSchema,

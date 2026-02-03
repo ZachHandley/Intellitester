@@ -1,5 +1,5 @@
 export type AIConfig = {
-  provider: 'anthropic' | 'openai' | 'ollama';
+  provider: 'anthropic' | 'openai' | 'ollama' | 'groq' | 'openrouter';
   model: string;
   apiKey?: string;
   baseUrl?: string;

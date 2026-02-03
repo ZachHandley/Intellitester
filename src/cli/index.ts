@@ -1926,20 +1926,18 @@ const runTestCommand = async (
       enabled: true,
       maxAttempts: config?.healing?.maxAttempts ?? test.config?.healing?.maxAttempts ?? 3,
     } : undefined,
+    onStepComplete: (step) => {
+      const label = `[${step.status === 'passed' ? 'OK' : 'FAIL'}] ${step.action.type}`;
+      if (step.error) {
+        console.error(`${label} - ${step.error}`);
+      } else if (step.logOutput) {
+        console.log(label);
+        console.log(`  ${step.logOutput}`);
+      } else {
+        console.log(label);
+      }
+    },
   });
-
-  for (const step of result.steps) {
-    const label = `[${step.status === 'passed' ? 'OK' : 'FAIL'}] ${step.action.type}`;
-    if (step.error) {
-      console.error(`${label} - ${step.error}`);
-    } else if (step.logOutput) {
-      // Include log output in step display
-      console.log(`${label}`);
-      console.log(`  ${step.logOutput}`);
-    } else {
-      console.log(label);
-    }
-  }
 
   if (result.status === 'failed') {
     process.exitCode = 1;

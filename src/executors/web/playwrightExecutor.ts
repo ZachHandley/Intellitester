@@ -53,6 +53,8 @@ export interface WebRunOptions {
     enabled: boolean;
     maxAttempts?: number;
   };
+  /** Callback invoked after each step completes (passed or failed) for real-time output */
+  onStepComplete?: (result: StepResult, index: number, total: number) => void;
 }
 
 export interface StepResult {
@@ -1622,6 +1624,7 @@ export const runWebTest = async (
               : ssAction.name;
             const screenshotPath = await runScreenshot(page, screenshotName, screenshotDir, index, browserName);
             sizeResults.push({ action, status: 'passed', screenshotPath });
+            options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
             const trackedPayload = buildTrackPayload(action, index, { screenshotPath });
             if (trackedPayload) {
               await trackResource(trackedPayload);
@@ -1642,9 +1645,11 @@ export const runWebTest = async (
           });
 
           sizeResults.push({ action, status: 'passed', logOutput: actionExtras.logOutput });
+          options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           sizeResults.push({ action, status: 'failed', error: message });
+          options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
           _sizeTestFailed = true;
           overallFailed = true;
           // Don't throw - continue to next viewport size if there is one

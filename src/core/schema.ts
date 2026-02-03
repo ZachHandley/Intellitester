@@ -429,6 +429,8 @@ export const TestConfigSchema = z.object({
   ios: iosConfigSchema.optional(),
   email: emailConfigSchema.optional(),
   appwrite: appwriteConfigSchema.optional(),
+  healing: healingSchema.optional(),
+  ai: aiConfigSchema.optional(),
 }).describe('Test-specific configuration that overrides global settings');
 
 export const TestDefinitionSchema = z.object({

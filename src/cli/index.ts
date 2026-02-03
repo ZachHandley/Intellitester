@@ -1903,25 +1903,28 @@ const runTestCommand = async (
     `Running ${path.basename(absoluteTarget)} on web (${browser}${modeFlags.length > 0 ? ', ' + modeFlags.join(', ') : ''})`,
   );
 
-  // Pass aiConfig if interactive mode OR healing is enabled
-  const healingEnabled = config?.healing?.enabled === true;
+  // Pass aiConfig if interactive mode OR healing is enabled (check both global and test-level config)
+  const healingEnabled = config?.healing?.enabled === true || test.config?.healing?.enabled === true;
   const needsAi = interactive || healingEnabled;
+
+  // Resolve AI config: global takes priority, test-level as fallback
+  const resolvedAiConfig = config?.ai ?? test.config?.ai;
 
   const result = await runWebTest(test, {
     baseUrl,
     headed,
     browser,
-    defaultTimeoutMs: config?.defaults?.timeout,
+    defaultTimeoutMs: config?.defaults?.timeout ?? test.config?.defaults?.timeout,
     webServer: !skipWebServer && config?.webServer ? config.webServer : undefined,
     debug,
     interactive,
-    aiConfig: needsAi ? config?.ai : undefined,
+    aiConfig: needsAi ? resolvedAiConfig : undefined,
     sessionId: options.sessionId,
     trackDir: options.trackDir,
     testSizes: options.testSizes as ('xs' | 'sm' | 'md' | 'lg' | 'xl')[] | undefined,
     healing: healingEnabled ? {
       enabled: true,
-      maxAttempts: config?.healing?.maxAttempts,
+      maxAttempts: config?.healing?.maxAttempts ?? test.config?.healing?.maxAttempts ?? 3,
     } : undefined,
   });
 

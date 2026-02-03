@@ -1,0 +1,64 @@
+name: Stripe Checkout Payment Flow
+platform: web
+
+variables:
+  CARD_NUMBER: "4242424242424242"
+  CARD_EXPIRY: "12/34"
+  CARD_CVC: "123"
+
+steps:
+  # Navigate to checkout page
+  - type: navigate
+    value: /checkout
+
+  # Wait for Stripe iframe to load
+  - type: wait
+    target:
+      css: "div.__PrivateStripeElement iframe"
+    timeout: 10000
+
+  # Type card number using the new 'type' action (character-by-character, doesn't clear)
+  # This works inside the Stripe iframe
+  - type: type
+    target:
+      css: "[placeholder='Card number'], [data-elements-stable-field-name='cardNumber']"
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "{{CARD_NUMBER}}"
+    delay: 50
+
+  # Type expiry date
+  - type: type
+    target:
+      css: "[placeholder='MM / YY'], [data-elements-stable-field-name='cardExpiry']"
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "{{CARD_EXPIRY}}"
+    delay: 50
+
+  # Type CVC
+  - type: type
+    target:
+      css: "[placeholder='CVC'], [data-elements-stable-field-name='cardCvc']"
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "{{CARD_CVC}}"
+    delay: 50
+
+  # Click Pay button (on main page, not in iframe)
+  - type: tap
+    target:
+      testId: "pay-button"
+
+  # Wait for success message
+  - type: wait
+    target:
+      text: "Payment successful"
+    timeout: 30000
+
+  # Take a screenshot of the success state
+  - type: screenshot
+    name: payment-success.png

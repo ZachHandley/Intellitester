@@ -53,6 +53,18 @@ export const LocatorSchema = z
     { message: 'Locator requires at least one selector or description' },
   );
 
+export const FrameLocatorSchema = z
+  .object({
+    css: z.string().trim().optional().describe('CSS selector for the iframe element'),
+    name: z.string().trim().optional().describe('Name or id attribute of the iframe'),
+    index: z.number().int().nonnegative().optional().describe('Zero-based index when multiple iframes match (default: 0)'),
+  })
+  .describe('Defines how to locate an iframe on the page. Either css or name must be provided.')
+  .refine(
+    (locator) => Boolean(locator.css || locator.name),
+    { message: 'FrameLocator requires css or name' },
+  );
+
 const navigateActionSchema = z.object({
   type: z.literal('navigate'),
   value: nonEmptyString.describe('URL or path to navigate to'),
@@ -61,6 +73,7 @@ const navigateActionSchema = z.object({
 const tapActionSchema = z.object({
   type: z.literal('tap'),
   target: LocatorSchema,
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   errorIf: errorIfSchema.optional(),
 }).describe('Click or tap on an element');
 
@@ -68,18 +81,30 @@ const inputActionSchema = z.object({
   type: z.literal('input'),
   target: LocatorSchema,
   value: z.string().describe('Text to input (can reference variables with ${VAR_NAME})'),
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   errorIf: errorIfSchema.optional(),
-}).describe('Input text into a field');
+}).describe('Input text into a field (clears field first)');
+
+const typeActionSchema = z.object({
+  type: z.literal('type'),
+  target: LocatorSchema,
+  value: z.string().describe('Text to type character-by-character (appends to existing content)'),
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
+  delay: z.number().int().nonnegative().optional().describe('Delay between keystrokes in milliseconds (default: 50)'),
+  errorIf: errorIfSchema.optional(),
+}).describe('Type text character-by-character without clearing (for Stripe, special inputs)');
 
 const clearActionSchema = z.object({
   type: z.literal('clear'),
   target: LocatorSchema,
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   errorIf: errorIfSchema.optional(),
 }).describe('Clear the contents of an input field');
 
 const hoverActionSchema = z.object({
   type: z.literal('hover'),
   target: LocatorSchema,
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   errorIf: errorIfSchema.optional(),
 }).describe('Hover over an element');
 
@@ -106,12 +131,14 @@ const pressActionSchema = z.object({
   type: z.literal('press'),
   key: nonEmptyString.describe('Key to press (e.g., Enter, Tab, Escape, ArrowDown)'),
   target: LocatorSchema.optional().describe('Element to focus before pressing key'),
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element or keyboard action'),
   errorIf: errorIfSchema.optional(),
 }).describe('Press a keyboard key');
 
 const focusActionSchema = z.object({
   type: z.literal('focus'),
   target: LocatorSchema,
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   errorIf: errorIfSchema.optional(),
 }).describe('Focus an element');
 
@@ -119,6 +146,7 @@ const assertActionSchema = z.object({
   type: z.literal('assert'),
   target: LocatorSchema,
   value: z.string().optional().describe('Expected text content'),
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   errorIf: errorIfSchema.optional(),
 }).describe('Assert that an element exists or contains expected text');
 
@@ -127,6 +155,7 @@ const waitActionSchema = z
     type: z.literal('wait'),
     target: LocatorSchema.optional().describe('Element to wait for'),
     timeout: z.number().int().positive().optional().describe('Time to wait in milliseconds'),
+    frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
     errorIf: errorIfSchema.optional(),
   })
   .describe('Wait for an element or timeout')
@@ -196,6 +225,7 @@ const waitForSelectorActionSchema = z.object({
     .describe('Element state to wait for'),
   timeout: z.number().int().positive().optional()
     .describe('Time to wait in milliseconds'),
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   errorIf: errorIfSchema.optional(),
 }).describe('Wait for an element to reach a specific state');
 
@@ -209,6 +239,7 @@ const BaseActionSchema = z.discriminatedUnion('type', [
   navigateActionSchema,
   tapActionSchema,
   inputActionSchema,
+  typeActionSchema,
   clearActionSchema,
   hoverActionSchema,
   selectActionSchema,

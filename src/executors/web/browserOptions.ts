@@ -132,6 +132,10 @@ export function getBrowserLaunchOptions(options: BrowserLaunchOptions) {
   if (browser === 'firefox') {
     return {
       headless,
+      // Enable WebDriver BiDi for faster bidirectional communication (experimental)
+      env: {
+        MOZ_WEBDRIVER_BIDI: '1',
+      },
       firefoxUserPrefs: {
         // Enable JIT (disabled in automation mode by default, causes 2-4x JS slowdown)
         'javascript.options.jit': true,

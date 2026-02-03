@@ -7,6 +7,7 @@ import {
   firefox,
   webkit,
   type BrowserType,
+  type FrameLocator,
   type Locator as PWLocator,
   type Page,
 } from 'playwright';
@@ -103,6 +104,80 @@ const resolveLocator = (page: Page, locator: Locator): PWLocator => {
   }
   if (locator.description) return page.getByText(locator.description);
   throw new Error('No usable selector found for locator');
+};
+
+interface FrameSpec {
+  css?: string;
+  name?: string;
+  index?: number;
+}
+
+/**
+ * Resolve a frame locator from the page. Returns a FrameLocator for iframe interaction.
+ * If no frameSpec provided, returns null (use page directly).
+ */
+const resolveFrameLocator = (
+  page: Page,
+  frameSpec: FrameSpec | undefined,
+): FrameLocator | null => {
+  if (!frameSpec) return null;
+
+  let frameLocator: FrameLocator;
+
+  if (frameSpec.css) {
+    frameLocator = page.frameLocator(frameSpec.css);
+  } else if (frameSpec.name) {
+    // Match by name or id attribute of iframe
+    frameLocator = page.frameLocator(`iframe[name="${frameSpec.name}"], iframe#${frameSpec.name}`);
+  } else {
+    return null;
+  }
+
+  // Apply index if specified, otherwise use first()
+  if (typeof frameSpec.index === 'number') {
+    frameLocator = frameLocator.nth(frameSpec.index);
+  } else {
+    frameLocator = frameLocator.first();
+  }
+
+  return frameLocator;
+};
+
+/**
+ * Resolve a locator within a context (Page or FrameLocator).
+ * Works with both main page and iframe contexts.
+ */
+const resolveLocatorInContext = (
+  context: Page | FrameLocator,
+  locator: Locator,
+): PWLocator => {
+  if (locator.testId) {
+    // Try data-testid first (Playwright default), then fallback to id, then class
+    return context.locator(
+      `[data-testid="${locator.testId}"], #${CSS.escape(locator.testId)}, .${CSS.escape(locator.testId)}`
+    ).first();
+  }
+  if (locator.text) return context.getByText(locator.text);
+  if (locator.css) return context.locator(locator.css);
+  if (locator.xpath) return context.locator(`xpath=${locator.xpath}`);
+  if (locator.role) {
+    const options: { name?: string } = {};
+    if (locator.name) options.name = locator.name;
+    return context.getByRole(locator.role as any, options);
+  }
+  if (locator.description) return context.getByText(locator.description);
+  throw new Error('No usable selector found for locator');
+};
+
+/**
+ * Get the appropriate context (Page or FrameLocator) for an action.
+ */
+const getActionContext = (
+  page: Page,
+  frameSpec: FrameSpec | undefined,
+): Page | FrameLocator => {
+  const frame = resolveFrameLocator(page, frameSpec);
+  return frame ?? page;
 };
 
 /**
@@ -421,35 +496,89 @@ async function executeActionWithRetry(
           break;
         }
         case 'tap': {
+          const tapAction = action as Extract<Action, { type: 'tap' }>;
           if (debugMode) {
-            console.log(`[DEBUG] Tapping element:`, action.target);
+            console.log(`[DEBUG] Tapping element:`, tapAction.target);
+            if (tapAction.frame) console.log(`[DEBUG] In frame:`, tapAction.frame);
           }
-          await checkErrorIf(page, action.target, action.errorIf);
-          await runTap(page, action.target, browserName);
+          if (tapAction.frame) {
+            const frameContext = getActionContext(page, tapAction.frame);
+            const handle = resolveLocatorInContext(frameContext, tapAction.target);
+            await handle.click();
+            // Wait for page to stabilize after click
+            const timing = getBrowserTimingConfig(browserName ?? 'chromium');
+            await waitForPageStable(page, timing.networkIdleTimeout);
+          } else {
+            await checkErrorIf(page, tapAction.target, tapAction.errorIf);
+            await runTap(page, tapAction.target, browserName);
+          }
           break;
         }
         case 'input': {
+          const inputAction = action as Extract<Action, { type: 'input' }>;
           if (debugMode) {
-            const interpolated = interpolateVariables(action.value, context.variables);
-            console.log(`[DEBUG] Inputting value into element:`, action.target);
+            const interpolated = interpolateVariables(inputAction.value, context.variables);
+            console.log(`[DEBUG] Inputting value into element:`, inputAction.target);
             console.log(`[DEBUG] Value: ${interpolated}`);
+            if (inputAction.frame) console.log(`[DEBUG] In frame:`, inputAction.frame);
           }
-          await checkErrorIf(page, action.target, action.errorIf);
-          await runInput(page, action.target, action.value, context);
+          if (inputAction.frame) {
+            const frameContext = getActionContext(page, inputAction.frame);
+            const handle = resolveLocatorInContext(frameContext, inputAction.target);
+            const interpolated = interpolateVariables(inputAction.value, context.variables);
+            await handle.fill(interpolated);
+          } else {
+            await checkErrorIf(page, inputAction.target, inputAction.errorIf);
+            await runInput(page, inputAction.target, inputAction.value, context);
+          }
+          break;
+        }
+        case 'type': {
+          const typeAction = action as Extract<Action, { type: 'type' }>;
+          const interpolated = interpolateVariables(typeAction.value, context.variables);
+          if (debugMode) {
+            console.log(`[DEBUG] Typing value into element:`, typeAction.target);
+            console.log(`[DEBUG] Value: ${interpolated}`);
+            if (typeAction.frame) console.log(`[DEBUG] In frame:`, typeAction.frame);
+          }
+          const frameContext = getActionContext(page, typeAction.frame);
+          const handle = resolveLocatorInContext(frameContext, typeAction.target);
+          // Use pressSequentially for character-by-character typing (doesn't clear first)
+          await handle.pressSequentially(interpolated, { delay: typeAction.delay ?? 50 });
           break;
         }
         case 'clear': {
-          if (debugMode) console.log(`[DEBUG] Clearing element:`, action.target);
-          await checkErrorIf(page, action.target, action.errorIf);
-          const handle = resolveLocator(page, action.target);
-          await handle.clear();
+          const clearAction = action as Extract<Action, { type: 'clear' }>;
+          if (debugMode) {
+            console.log(`[DEBUG] Clearing element:`, clearAction.target);
+            if (clearAction.frame) console.log(`[DEBUG] In frame:`, clearAction.frame);
+          }
+          if (clearAction.frame) {
+            const frameContext = getActionContext(page, clearAction.frame);
+            const handle = resolveLocatorInContext(frameContext, clearAction.target);
+            await handle.clear();
+          } else {
+            await checkErrorIf(page, clearAction.target, clearAction.errorIf);
+            const handle = resolveLocator(page, clearAction.target);
+            await handle.clear();
+          }
           break;
         }
         case 'hover': {
-          if (debugMode) console.log(`[DEBUG] Hovering element:`, action.target);
-          await checkErrorIf(page, action.target, action.errorIf);
-          const handle = resolveLocator(page, action.target);
-          await handle.hover();
+          const hoverAction = action as Extract<Action, { type: 'hover' }>;
+          if (debugMode) {
+            console.log(`[DEBUG] Hovering element:`, hoverAction.target);
+            if (hoverAction.frame) console.log(`[DEBUG] In frame:`, hoverAction.frame);
+          }
+          if (hoverAction.frame) {
+            const frameContext = getActionContext(page, hoverAction.frame);
+            const handle = resolveLocatorInContext(frameContext, hoverAction.target);
+            await handle.hover();
+          } else {
+            await checkErrorIf(page, hoverAction.target, hoverAction.errorIf);
+            const handle = resolveLocator(page, hoverAction.target);
+            await handle.hover();
+          }
           break;
         }
         case 'select': {
@@ -475,41 +604,95 @@ async function executeActionWithRetry(
           break;
         }
         case 'press': {
-          if (debugMode) console.log(`[DEBUG] Pressing key: ${action.key}`);
-          if (action.target) {
-            await checkErrorIf(page, action.target, action.errorIf);
-            const handle = resolveLocator(page, action.target);
-            await handle.press(action.key);
+          const pressAction = action as Extract<Action, { type: 'press' }>;
+          if (debugMode) {
+            console.log(`[DEBUG] Pressing key: ${pressAction.key}`);
+            if (pressAction.frame) console.log(`[DEBUG] In frame:`, pressAction.frame);
+          }
+          if (pressAction.frame) {
+            const frameContext = getActionContext(page, pressAction.frame);
+            if (pressAction.target) {
+              const handle = resolveLocatorInContext(frameContext, pressAction.target);
+              await handle.press(pressAction.key);
+            } else {
+              // For frame-scoped keyboard press without target, focus the frame first
+              // by clicking inside it, then press the key
+              await frameContext.locator('body').first().press(pressAction.key);
+            }
           } else {
-            await page.keyboard.press(action.key);
+            if (pressAction.target) {
+              await checkErrorIf(page, pressAction.target, pressAction.errorIf);
+              const handle = resolveLocator(page, pressAction.target);
+              await handle.press(pressAction.key);
+            } else {
+              await page.keyboard.press(pressAction.key);
+            }
           }
           break;
         }
         case 'focus': {
-          if (debugMode) console.log(`[DEBUG] Focusing:`, action.target);
-          await checkErrorIf(page, action.target, action.errorIf);
-          const handle = resolveLocator(page, action.target);
-          await handle.focus();
+          const focusAction = action as Extract<Action, { type: 'focus' }>;
+          if (debugMode) {
+            console.log(`[DEBUG] Focusing:`, focusAction.target);
+            if (focusAction.frame) console.log(`[DEBUG] In frame:`, focusAction.frame);
+          }
+          if (focusAction.frame) {
+            const frameContext = getActionContext(page, focusAction.frame);
+            const handle = resolveLocatorInContext(frameContext, focusAction.target);
+            await handle.focus();
+          } else {
+            await checkErrorIf(page, focusAction.target, focusAction.errorIf);
+            const handle = resolveLocator(page, focusAction.target);
+            await handle.focus();
+          }
           break;
         }
         case 'assert': {
+          const assertAction = action as Extract<Action, { type: 'assert' }>;
           if (debugMode) {
-            console.log(`[DEBUG] Asserting element:`, action.target);
-            if (action.value) {
-              const interpolated = interpolateVariables(action.value, context.variables);
+            console.log(`[DEBUG] Asserting element:`, assertAction.target);
+            if (assertAction.value) {
+              const interpolated = interpolateVariables(assertAction.value, context.variables);
               console.log(`[DEBUG] Expected text contains: ${interpolated}`);
             }
+            if (assertAction.frame) console.log(`[DEBUG] In frame:`, assertAction.frame);
           }
-          await checkErrorIf(page, action.target, action.errorIf);
-          await runAssert(page, action.target, action.value, context);
+          if (assertAction.frame) {
+            const frameContext = getActionContext(page, assertAction.frame);
+            const handle = resolveLocatorInContext(frameContext, assertAction.target);
+            await handle.waitFor({ state: 'visible' });
+            if (assertAction.value) {
+              const interpolated = interpolateVariables(assertAction.value, context.variables);
+              const text = (await handle.textContent())?.trim() ?? '';
+              if (!text.includes(interpolated)) {
+                throw new Error(
+                  `Assertion failed: expected element text to include "${interpolated}", got "${text}"`,
+                );
+              }
+            }
+          } else {
+            await checkErrorIf(page, assertAction.target, assertAction.errorIf);
+            await runAssert(page, assertAction.target, assertAction.value, context);
+          }
           break;
         }
-        case 'wait':
-          if (action.target && action.errorIf) {
-            await checkErrorIf(page, action.target, action.errorIf);
+        case 'wait': {
+          const waitAction = action as Extract<Action, { type: 'wait' }>;
+          if (debugMode && waitAction.frame) {
+            console.log(`[DEBUG] Waiting in frame:`, waitAction.frame);
           }
-          await runWait(page, action);
+          if (waitAction.frame && waitAction.target) {
+            const frameContext = getActionContext(page, waitAction.frame);
+            const handle = resolveLocatorInContext(frameContext, waitAction.target);
+            await handle.waitFor({ state: 'visible', timeout: waitAction.timeout });
+          } else {
+            if (waitAction.target && waitAction.errorIf) {
+              await checkErrorIf(page, waitAction.target, waitAction.errorIf);
+            }
+            await runWait(page, waitAction);
+          }
           break;
+        }
         case 'scroll':
           if (action.target && action.errorIf) {
             await checkErrorIf(page, action.target, action.errorIf);
@@ -611,14 +794,22 @@ async function executeActionWithRetry(
         }
         case 'waitForSelector': {
           const wsAction = action as Extract<Action, { type: 'waitForSelector' }>;
-          if (wsAction.errorIf) {
-            await checkErrorIf(page, wsAction.target, wsAction.errorIf);
-          }
-          const handle = resolveLocator(page, wsAction.target);
           const timeout = wsAction.timeout ?? 30000;
 
           if (debugMode) {
             console.log(`[DEBUG] Waiting for element to be ${wsAction.state}:`, wsAction.target);
+            if (wsAction.frame) console.log(`[DEBUG] In frame:`, wsAction.frame);
+          }
+
+          let handle: PWLocator;
+          if (wsAction.frame) {
+            const frameContext = getActionContext(page, wsAction.frame);
+            handle = resolveLocatorInContext(frameContext, wsAction.target);
+          } else {
+            if (wsAction.errorIf) {
+              await checkErrorIf(page, wsAction.target, wsAction.errorIf);
+            }
+            handle = resolveLocator(page, wsAction.target);
           }
 
           switch (wsAction.state) {

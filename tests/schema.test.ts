@@ -167,4 +167,90 @@ steps:
       expect(parsed.steps[1].pattern).toBe('User: (\\w+)');
     }
   });
+
+  it('parses type action for character-by-character input', () => {
+    const yaml = `
+name: Type action test
+platform: web
+steps:
+  - type: type
+    target:
+      css: "[placeholder='Card number']"
+    value: "4242424242424242"
+    delay: 50
+`;
+
+    const parsed = parseTestDefinition(yaml);
+    expect(parsed.steps).toHaveLength(1);
+    expect(parsed.steps[0].type).toBe('type');
+    if (parsed.steps[0].type === 'type') {
+      expect(parsed.steps[0].target.css).toBe("[placeholder='Card number']");
+      expect(parsed.steps[0].value).toBe('4242424242424242');
+      expect(parsed.steps[0].delay).toBe(50);
+    }
+  });
+
+  it('parses frame property for iframe targeting', () => {
+    const yaml = `
+name: Stripe iframe test
+platform: web
+steps:
+  - type: type
+    target:
+      css: "[placeholder='Card number']"
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "4242424242424242"
+  - type: input
+    target:
+      testId: email-field
+    frame:
+      name: stripe-frame
+    value: "test@example.com"
+  - type: tap
+    target:
+      text: Submit
+    frame:
+      css: "#checkout-iframe"
+`;
+
+    const parsed = parseTestDefinition(yaml);
+    expect(parsed.steps).toHaveLength(3);
+
+    // Check type action with frame
+    expect(parsed.steps[0].type).toBe('type');
+    if (parsed.steps[0].type === 'type') {
+      expect(parsed.steps[0].frame?.css).toBe('div.__PrivateStripeElement iframe');
+      expect(parsed.steps[0].frame?.index).toBe(0);
+    }
+
+    // Check input action with frame
+    expect(parsed.steps[1].type).toBe('input');
+    if (parsed.steps[1].type === 'input') {
+      expect(parsed.steps[1].frame?.name).toBe('stripe-frame');
+    }
+
+    // Check tap action with frame
+    expect(parsed.steps[2].type).toBe('tap');
+    if (parsed.steps[2].type === 'tap') {
+      expect(parsed.steps[2].frame?.css).toBe('#checkout-iframe');
+    }
+  });
+
+  it('validates frame locator requires css or name', () => {
+    const yaml = `
+name: Invalid frame
+platform: web
+steps:
+  - type: input
+    target:
+      css: "input"
+    frame:
+      index: 0
+    value: "test"
+`;
+
+    expect(() => parseTestDefinition(yaml)).toThrowError(/css.*name|name.*css/i);
+  });
 });

@@ -373,15 +373,29 @@ const aiSourceSchema = z.object({
   extensions: z.array(z.string()).default(['.vue', '.astro', '.tsx', '.jsx', '.svelte']).describe('File extensions to include in source code analysis'),
 }).optional().describe('Source code directories for AI to analyze when generating tests');
 
+const defaultModelForProvider = (provider: string): string => {
+  switch (provider) {
+    case 'anthropic': return 'claude-4-5-haiku-20251014';
+    case 'openrouter': return 'anthropic/claude-4-5-haiku-20251014';
+    case 'openai': return 'gpt-4o-mini';
+    case 'groq': return 'llama-3.1-8b-instant';
+    case 'ollama': return 'llama3.2:3b';
+    default: return 'claude-4-5-haiku-20251014';
+  }
+};
+
 const aiConfigSchema = z.object({
   provider: z.enum(['anthropic', 'openai', 'ollama', 'groq', 'openrouter']).describe('AI provider to use for test generation'),
-  model: nonEmptyString.describe('Model name to use'),
+  model: z.string().trim().optional().describe('Model name to use (defaults based on provider if omitted)'),
   apiKey: z.string().trim().optional().describe('API key for the AI provider (supports ${ENV_VAR} syntax)'),
   baseUrl: optionalUrl.describe('Base URL for the AI API (required for Ollama, auto-set for groq/openrouter)'),
   temperature: z.number().min(0).max(2).default(0.2).describe('Temperature for AI generation (0 = deterministic, 2 = very creative)'),
   maxTokens: z.number().int().positive().default(4096).describe('Maximum tokens for AI responses'),
   source: aiSourceSchema,
-}).describe('AI configuration for test generation and healing');
+}).transform((val) => ({
+  ...val,
+  model: val.model || defaultModelForProvider(val.provider),
+})).describe('AI configuration for test generation and healing');
 
 // Cleanup discovery configuration
 export const cleanupDiscoverSchema = z.object({

@@ -607,6 +607,26 @@ Type text into an input field. Clears existing content first.
   value: "{{randomUsername}}"
 \`\`\`
 
+#### \`type\`
+Type text character-by-character WITHOUT clearing first. Use for special inputs like Stripe payment fields, autocomplete, or inputs that validate on each keystroke.
+
+\`\`\`yaml
+# Basic character-by-character typing
+- type: type
+  target: { testId: card-number }
+  value: "4242424242424242"
+
+# With custom delay between keystrokes (default: 50ms)
+- type: type
+  target: { css: "[placeholder='Card number']" }
+  value: "4242424242424242"
+  delay: 100
+\`\`\`
+
+**When to use \`type\` vs \`input\`:**
+- Use \`input\` for normal form fields (faster, clears first)
+- Use \`type\` for special inputs like Stripe, password strength meters, or autocomplete fields
+
 #### \`clear\`
 Clear the contents of an input field.
 
@@ -930,6 +950,125 @@ target:
   testId: modal
   text: Confirm
 \`\`\`
+
+---
+
+## Iframe Targeting with \`frame\`
+
+Many actions support a \`frame\` property to target elements inside iframes. This is essential for payment forms (Stripe, PayPal), embedded widgets, and third-party integrations.
+
+### Frame Locator Properties
+
+| Property | Description |
+|----------|-------------|
+| \`css\` | CSS selector for the iframe element |
+| \`name\` | Name or id attribute of the iframe |
+| \`index\` | Zero-based index when multiple iframes match (default: 0) |
+
+### Basic Usage
+
+\`\`\`yaml
+# Target element inside an iframe by CSS selector
+- type: type
+  target: { css: "[placeholder='Card number']" }
+  frame:
+    css: "iframe.payment-frame"
+  value: "4242424242424242"
+
+# Target iframe by name attribute
+- type: input
+  target: { testId: email-field }
+  frame:
+    name: checkout-iframe
+  value: "test@example.com"
+
+# When multiple iframes match, use index
+- type: type
+  target: { css: "input" }
+  frame:
+    css: "div.__PrivateStripeElement iframe"
+    index: 0
+  value: "4242424242424242"
+\`\`\`
+
+### Supported Actions with \`frame\`
+
+These actions support the \`frame\` property:
+- \`tap\` - Click inside iframe
+- \`input\` - Fill text inside iframe
+- \`type\` - Type character-by-character inside iframe
+- \`clear\` - Clear input inside iframe
+- \`hover\` - Hover element inside iframe
+- \`press\` - Press key inside iframe
+- \`focus\` - Focus element inside iframe
+- \`assert\` - Assert element inside iframe
+- \`wait\` - Wait for element inside iframe
+- \`waitForSelector\` - Wait for element state inside iframe
+
+### Stripe Checkout Example
+
+\`\`\`yaml
+name: Stripe Checkout
+platform: web
+variables:
+  CARD_NUMBER: "4242424242424242"
+  CARD_EXPIRY: "12/34"
+  CARD_CVC: "123"
+steps:
+  - type: navigate
+    value: /checkout
+
+  # Wait for Stripe iframe to load
+  - type: wait
+    target:
+      css: "div.__PrivateStripeElement iframe"
+    timeout: 10000
+
+  # Type card number (character-by-character for Stripe validation)
+  - type: type
+    target:
+      css: "[placeholder='Card number']"
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "\${CARD_NUMBER}"
+    delay: 50
+
+  # Type expiry
+  - type: type
+    target:
+      css: "[placeholder='MM / YY']"
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "\${CARD_EXPIRY}"
+
+  # Type CVC
+  - type: type
+    target:
+      css: "[placeholder='CVC']"
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "\${CARD_CVC}"
+
+  # Submit (on main page, not in iframe)
+  - type: tap
+    target: { testId: pay-button }
+
+  - type: assert
+    target: { text: "Payment successful" }
+\`\`\`
+
+### Common Iframe Selectors
+
+| Service | Typical Selector |
+|---------|------------------|
+| Stripe Elements | \`div.__PrivateStripeElement iframe\` |
+| Stripe Checkout | \`iframe[name*='stripe']\` |
+| PayPal | \`iframe[name*='paypal']\` |
+| reCAPTCHA | \`iframe[title*='reCAPTCHA']\` |
+| YouTube | \`iframe[src*='youtube.com']\` |
 
 ---
 
@@ -1467,6 +1606,60 @@ steps:
   - type: select
     target: { testId: price-range }
     value: "100-500"
+\`\`\`
+
+### Payment with Stripe
+
+\`\`\`yaml
+name: Stripe Payment
+platform: web
+variables:
+  # Stripe test card numbers:
+  # 4242424242424242 - Succeeds
+  # 4000000000000002 - Declined
+  CARD_NUMBER: "4242424242424242"
+  CARD_EXPIRY: "12/34"
+  CARD_CVC: "123"
+steps:
+  - type: navigate
+    value: /checkout
+
+  # Wait for Stripe to initialize
+  - type: wait
+    target: { css: "div.__PrivateStripeElement iframe" }
+    timeout: 10000
+
+  # Fill card details (use 'type' not 'input' for Stripe)
+  - type: type
+    target: { css: "[placeholder='Card number']" }
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: \${CARD_NUMBER}
+    delay: 50
+
+  - type: type
+    target: { css: "[placeholder='MM / YY']" }
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: \${CARD_EXPIRY}
+
+  - type: type
+    target: { css: "[placeholder='CVC']" }
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: \${CARD_CVC}
+
+  # Submit payment
+  - type: tap
+    target: { testId: submit-payment }
+
+  # Verify success
+  - type: wait
+    target: { text: "Payment successful" }
+    timeout: 30000
 \`\`\`
 
 ---

@@ -113,6 +113,63 @@ When execution pauses, you can:
 - Examine selectors and elements
 - Continue execution when ready
 
+## Iframe Targeting (frame)
+
+Target elements inside iframes using the `frame` property. Essential for payment forms (Stripe, PayPal), embedded widgets, and third-party integrations.
+
+```yaml
+steps:
+  # Wait for Stripe iframe to load
+  - type: wait
+    target: { css: "div.__PrivateStripeElement iframe" }
+    timeout: 10000
+
+  # Type card number inside iframe
+  - type: type
+    target: { css: "[placeholder='Card number']" }
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "4242424242424242"
+    delay: 50
+
+  # Type expiry inside iframe
+  - type: type
+    target: { css: "[placeholder='MM / YY']" }
+    frame:
+      css: "div.__PrivateStripeElement iframe"
+      index: 0
+    value: "12/34"
+```
+
+**Frame locator properties:**
+
+| Property | Description |
+|----------|-------------|
+| `css` | CSS selector for the iframe element |
+| `name` | Name or id attribute of the iframe |
+| `index` | Zero-based index when multiple iframes match (default: 0) |
+
+**Supported actions:** `tap`, `input`, `type`, `clear`, `hover`, `press`, `focus`, `assert`, `wait`, `waitForSelector`
+
+## Character-by-Character Typing (type)
+
+Use the `type` action for inputs that require character-by-character entry (like Stripe payment fields, autocomplete, or inputs with per-keystroke validation). Unlike `input` which clears first, `type` appends characters one at a time.
+
+```yaml
+steps:
+  # Use 'type' for Stripe (validates each keystroke)
+  - type: type
+    target: { testId: card-number }
+    value: "4242424242424242"
+    delay: 50  # ms between keystrokes (default: 50)
+
+  # Use 'input' for normal form fields (faster, clears first)
+  - type: input
+    target: { testId: email }
+    value: "test@example.com"
+```
+
 ## Fast-Fail Conditions (errorIf)
 
 Use `errorIf` to fail a step immediately when a condition is met, without waiting for timeouts:

@@ -22,6 +22,8 @@ function formatActionName(step: StepResult, index: number): string {
       return `step-${index + 1}: tap element`;
     case 'input':
       return `step-${index + 1}: input text`;
+    case 'type':
+      return `step-${index + 1}: type text`;
     case 'assert':
       return `step-${index + 1}: assert element`;
     case 'wait':

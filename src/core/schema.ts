@@ -375,12 +375,12 @@ const aiSourceSchema = z.object({
 
 const defaultModelForProvider = (provider: string): string => {
   switch (provider) {
-    case 'anthropic': return 'claude-4-5-haiku-20251014';
-    case 'openrouter': return 'anthropic/claude-4-5-haiku-20251014';
+    case 'anthropic': return 'claude-haiku-4-5-20251001';
+    case 'openrouter': return 'anthropic/claude-haiku-4.5';
     case 'openai': return 'gpt-4o-mini';
     case 'groq': return 'llama-3.1-8b-instant';
     case 'ollama': return 'llama3.2:3b';
-    default: return 'claude-4-5-haiku-20251014';
+    default: return 'claude-haiku-4-5-20251001';
   }
 };
 

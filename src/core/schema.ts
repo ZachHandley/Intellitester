@@ -87,7 +87,7 @@ const inputActionSchema = z.object({
 
 const typeActionSchema = z.object({
   type: z.literal('type'),
-  target: LocatorSchema,
+  target: LocatorSchema.optional().describe('Element to type into (if omitted, types into the currently focused element)'),
   value: z.string().describe('Text to type character-by-character (appends to existing content)'),
   frame: FrameLocatorSchema.optional().describe('Iframe context for the target element'),
   delay: z.number().int().nonnegative().optional().describe('Delay between keystrokes in milliseconds (default: 50)'),

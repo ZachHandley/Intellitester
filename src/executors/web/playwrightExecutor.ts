@@ -556,14 +556,18 @@ async function executeActionWithRetry(
           const typeAction = action as Extract<Action, { type: 'type' }>;
           const interpolated = interpolateVariables(typeAction.value, context.variables);
           if (debugMode) {
-            console.log(`[DEBUG] Typing value into element:`, typeAction.target);
+            console.log(`[DEBUG] Typing value:`, typeAction.target ?? '(focused element)');
             console.log(`[DEBUG] Value: ${interpolated}`);
             if (typeAction.frame) console.log(`[DEBUG] In frame:`, typeAction.frame);
           }
-          const frameContext = getActionContext(page, typeAction.frame);
-          const handle = resolveLocatorInContext(frameContext, typeAction.target);
-          // Use pressSequentially for character-by-character typing (doesn't clear first)
-          await handle.pressSequentially(interpolated, { delay: typeAction.delay ?? 50 });
+          if (typeAction.target) {
+            const frameContext = getActionContext(page, typeAction.frame);
+            const handle = resolveLocatorInContext(frameContext, typeAction.target);
+            await handle.pressSequentially(interpolated, { delay: typeAction.delay ?? 50 });
+          } else {
+            // No target: type into whatever currently has focus
+            await page.keyboard.type(interpolated, { delay: typeAction.delay ?? 50 });
+          }
           break;
         }
         case 'clear': {

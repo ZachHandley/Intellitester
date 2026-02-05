@@ -61,7 +61,6 @@ export function createSqliteProvider(config: SqliteConfig): CleanupProvider {
     async configure() {
       try {
         // Dynamic import since better-sqlite3 is an optional dependency
-        // @ts-expect-error - better-sqlite3 is an optional peer dependency
         const DatabaseModule = await import('better-sqlite3');
         const Database = DatabaseModule.default || DatabaseModule;
         db = new Database(config.database, {

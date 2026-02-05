@@ -48,15 +48,42 @@ let cachedTracking: {
   mode: TrackingMode;
 } | null = null;
 
+/**
+ * Get environment variable from multiple sources (Node.js, Cloudflare Workers, etc.)
+ */
+const getEnv = (name: string): string | undefined => {
+  // Try Node.js process.env first
+  if (typeof process !== 'undefined' && process.env) {
+    return process.env[name];
+  }
+  // Try globalThis (some runtimes expose env this way)
+  const g = globalThis as Record<string, unknown>;
+  if (g.env && typeof g.env === 'object') {
+    return (g.env as Record<string, string>)[name];
+  }
+  // Try Deno-style
+  if (typeof Deno !== 'undefined' && Deno.env) {
+    try {
+      return Deno.env.get(name);
+    } catch {
+      // Permission denied
+    }
+  }
+  return undefined;
+};
+
+// Declare Deno for TypeScript
+declare const Deno: { env: { get: (name: string) => string | undefined } } | undefined;
+
 const resolveTracking = (): {
   sessionId?: string;
   trackUrl?: string;
   trackFile?: string;
   mode: TrackingMode;
 } => {
-  const sessionId = process.env.INTELLITESTER_SESSION_ID;
-  const trackUrl = process.env.INTELLITESTER_TRACK_URL;
-  const trackFile = process.env.INTELLITESTER_TRACK_FILE;
+  const sessionId = getEnv('INTELLITESTER_SESSION_ID');
+  const trackUrl = getEnv('INTELLITESTER_TRACK_URL');
+  const trackFile = getEnv('INTELLITESTER_TRACK_FILE');
 
   if (
     cachedTracking &&
@@ -83,7 +110,6 @@ const resolveTracking = (): {
 export async function track(resource: TrackedResource): Promise<void> {
   // Only run on server (SSR), not in browser
   if (typeof window !== 'undefined') return;
-  if (typeof process === 'undefined') return;
 
   const { sessionId, trackUrl, trackFile, mode } = resolveTracking();
 
@@ -105,19 +131,25 @@ export async function track(resource: TrackedResource): Promise<void> {
     }
   }
 
+  // File tracking only works in Node.js environments with fs access
   if (trackFile && (mode === 'file' || mode === 'both')) {
-    try {
-      const { appendFile } = await import('node:fs/promises');
-      const { existsSync } = await import('node:fs');
-      if (!existsSync(trackFile)) return;
-      const payload = {
-        sessionId,
-        createdAt: new Date().toISOString(),
-        ...resource,
-      };
-      await appendFile(trackFile, `${JSON.stringify(payload)}\n`, 'utf8');
-    } catch {
-      // Silent fail - don't break app
+    // Check if we're in a Node.js environment with fs access
+    if (typeof process !== 'undefined' && process.versions?.node) {
+      try {
+        const { appendFile } = await import('node:fs/promises');
+        const { existsSync } = await import('node:fs');
+        if (!existsSync(trackFile)) return;
+        const payload = {
+          sessionId,
+          createdAt: new Date().toISOString(),
+          ...resource,
+        };
+        await appendFile(trackFile, `${JSON.stringify(payload)}\n`, 'utf8');
+      } catch {
+        // Silent fail - don't break app
+      }
     }
+    // In non-Node.js environments (like Cloudflare Workers), file tracking is skipped
+    // but HTTP tracking above should still work
   }
 }

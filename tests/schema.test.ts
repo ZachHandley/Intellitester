@@ -182,11 +182,12 @@ steps:
 
     const parsed = parseTestDefinition(yaml);
     expect(parsed.steps).toHaveLength(1);
-    expect(parsed.steps[0].type).toBe('type');
-    if (parsed.steps[0].type === 'type') {
-      expect(parsed.steps[0].target.css).toBe("[placeholder='Card number']");
-      expect(parsed.steps[0].value).toBe('4242424242424242');
-      expect(parsed.steps[0].delay).toBe(50);
+    const step = parsed.steps[0]!;
+    expect(step.type).toBe('type');
+    if (step.type === 'type') {
+      expect(step.target!.css).toBe("[placeholder='Card number']");
+      expect(step.value).toBe('4242424242424242');
+      expect(step.delay).toBe(50);
     }
   });
 

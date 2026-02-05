@@ -31,20 +31,19 @@ import type { AIConfig } from '../../ai/types';
 import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js';
 import type { CleanupConfig } from '../../core/cleanup/types.js';
 import type { WorkflowConfig } from '../../core/workflowSchema.js';
+import type { ExecutorOptions } from '../../core/options.js';
 
-export interface WorkflowOptions {
-  headed?: boolean;
-  browser?: BrowserName;
-  interactive?: boolean;
-  debug?: boolean;
+/**
+ * Options for running a workflow.
+ * Extends base ExecutorOptions with workflow-specific options.
+ */
+export interface WorkflowOptions extends ExecutorOptions {
+  /** AI configuration for interactive/healing mode */
   aiConfig?: AIConfig;
+  /** Web server configuration */
   webServer?: WebServerConfig;
-  sessionId?: string;
-  trackDir?: string;
-  baseUrl?: string; // Fallback baseUrl from pipeline config
-  testSizes?: string[]; // Viewport sizes to test (e.g., ['xs', 'md', 'xl'] or ['320x568', '1920x1080'])
-  skipTrackingSetup?: boolean; // If true, reuse tracking setup from CLI (e.g., --preview mode)
-  skipWebServerStart?: boolean; // If true, reuse web server started by CLI
+  /** Fallback baseUrl from pipeline config */
+  baseUrl?: string;
 }
 
 export interface WorkflowWithContextOptions extends WorkflowOptions {
@@ -950,15 +949,24 @@ export function setupAppwriteTracking(page: Page, context: ExecutionContext): vo
  * Provides backwards compatibility by converting old Appwrite config to new cleanup config.
  */
 function inferCleanupConfig(config: WorkflowConfig | undefined): CleanupConfig | undefined {
-  if (!config) return undefined;
+  console.log('[Debug] inferCleanupConfig called');
+  console.log('[Debug] config:', config ? JSON.stringify(config, null, 2) : 'undefined');
+
+  if (!config) {
+    console.log('[Debug] Config is undefined/null, returning undefined');
+    return undefined;
+  }
 
   // Check for new cleanup config first
   if (config.cleanup) {
+    console.log('[Debug] Found config.cleanup, returning it');
     return config.cleanup;
   }
 
   // Backwards compatibility: convert old appwrite config
+  console.log('[Debug] Checking config.appwrite?.cleanup:', config.appwrite?.cleanup);
   if (config.appwrite?.cleanup) {
+    console.log('[Debug] Found config.appwrite.cleanup, returning cleanup config');
     return {
       provider: 'appwrite',
       scanUntracked: true,
@@ -971,6 +979,7 @@ function inferCleanupConfig(config: WorkflowConfig | undefined): CleanupConfig |
     };
   }
 
+  console.log('[Debug] No cleanup config found, returning undefined');
   return undefined;
 }
 
@@ -1300,6 +1309,8 @@ export async function runWorkflow(
   const webServerConfig = workflow.config?.webServer ?? options.webServer;
   const skipWebServer = options.skipWebServerStart;
 
+  console.log(`[Debug] webServerConfig: ${webServerConfig ? 'set' : 'not set'}, skipWebServer: ${skipWebServer}`);
+
   if (webServerConfig && !skipWebServer) {
     try {
       // Use workflow dir for workflow-defined webServer, process.cwd() for global config
@@ -1475,6 +1486,9 @@ export async function runWorkflow(
 
     // 8. Cleanup resources using the extensible cleanup system
     let cleanupResult: { success: boolean; deleted: string[]; failed: string[] } | undefined;
+
+    console.log('[Debug] About to check cleanupConfig:', cleanupConfig ? 'truthy' : 'falsy');
+    console.log('[Debug] cleanupConfig value:', cleanupConfig ? JSON.stringify(cleanupConfig, null, 2) : 'undefined');
 
     if (cleanupConfig) {
       // Determine if we should cleanup based on test status

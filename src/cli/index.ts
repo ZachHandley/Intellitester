@@ -12,7 +12,7 @@ import { Command } from 'commander';
 
 import { spawn, type ChildProcess } from 'node:child_process';
 
-import { loadIntellitesterConfig, loadTestDefinition, loadWorkflowDefinition, isWorkflowFile, isPipelineFile, loadPipelineDefinition, collectMissingEnvVars, isWorkflowContent, isPipelineContent } from '../core/loader';
+import { loadIntellitesterConfig, loadTestDefinition, loadWorkflowDefinition, isWorkflowFile, isPipelineFile, loadPipelineDefinition, isWorkflowContent, isPipelineContent } from '../core/loader';
 import { runPipeline } from '../executors/web/pipelineExecutor';
 import type { TestDefinition } from '../core/types';
 import { runWebTest, type BrowserName } from '../executors/web';
@@ -23,7 +23,9 @@ import { loadFailedCleanups, removeFailedCleanup } from '../core/cleanup/persist
 import { loadCleanupHandlers, executeCleanup } from '../core/cleanup/index.js';
 import type { CleanupConfig } from '../core/cleanup/types.js';
 import { validateEnvVars } from './envHelper';
+import { validateFileEnvVars, validateConfigEnvVars } from './envValidation.js';
 import { startTrackingServer, initFileTracking, type TrackingServer } from '../tracking';
+import { type CLIRunOptions, mapCLIToExecutorOptions } from '../core/options.js';
 
 const CONFIG_FILENAME = 'intellitester.config.yaml';
 const GUIDE_FILENAME = 'intellitester_guide.md';
@@ -167,7 +169,26 @@ const buildAndPreview = async (
   const cleanup = () => {
     if (previewProcess && !previewProcess.killed) {
       console.log('\n🛑 Stopping preview server...');
-      previewProcess.kill('SIGTERM');
+      const pid = previewProcess.pid;
+      if (pid) {
+        try {
+          // Kill entire process group (negative PID) to kill shell children too
+          process.kill(-pid, 'SIGTERM');
+          // Force kill after 1 second if still alive
+          setTimeout(() => {
+            try {
+              process.kill(-pid, 'SIGKILL');
+            } catch {
+              // Already dead
+            }
+          }, 1000);
+        } catch {
+          // Fallback to regular kill
+          previewProcess.kill('SIGTERM');
+        }
+      } else {
+        previewProcess.kill('SIGTERM');
+      }
     }
   };
 
@@ -191,10 +212,19 @@ const startPreviewServer = async (
 ): Promise<ChildProcess> => {
   return new Promise((resolve, reject) => {
     console.log(`Starting preview server: ${cmd} ${args.join(' ')}`);
+    // Debug: Log tracking env vars
+    if (process.env.INTELLITESTER_SESSION_ID) {
+      console.log(`[Debug] Passing tracking env to preview server:`);
+      console.log(`  SESSION_ID: ${process.env.INTELLITESTER_SESSION_ID}`);
+      console.log(`  TRACK_URL: ${process.env.INTELLITESTER_TRACK_URL || 'not set'}`);
+      console.log(`  TRACK_FILE: ${process.env.INTELLITESTER_TRACK_FILE || 'not set'}`);
+    }
     const child = spawn(cmd, args, {
       cwd,
       stdio: 'pipe',
       shell: true,
+      detached: true, // Create new process group so we can kill all children
+      env: { ...process.env }, // Explicitly pass all env vars
     });
 
     let output = '';
@@ -1863,27 +1893,16 @@ const runTestCommand = async (
   const testContent = await fs.readFile(absoluteTarget, 'utf8');
   const parsedTest = parse(testContent);
 
-  const hasConfigFile = await fileExists(CONFIG_FILENAME);
-  let parsedConfig: unknown = undefined;
-  if (hasConfigFile) {
-    const configContent = await fs.readFile(CONFIG_FILENAME, 'utf8');
-    parsedConfig = parse(configContent);
-  }
-
-  // Collect missing env vars from both config and test
-  const configMissing = parsedConfig ? collectMissingEnvVars(parsedConfig) : [];
-  const testMissing = collectMissingEnvVars(parsedTest);
-  const allMissing = [...new Set([...configMissing, ...testMissing])];
-
-  if (allMissing.length > 0) {
-    const projectRoot = await findProjectRoot(absoluteTarget);
-    const canContinue = await validateEnvVars(allMissing, projectRoot || process.cwd());
-    if (!canContinue) {
-      process.exit(1);
-    }
+  const canContinue = await validateFileEnvVars({
+    filePath: absoluteTarget,
+    parsedContent: parsedTest,
+  });
+  if (!canContinue) {
+    process.exit(1);
   }
 
   // Now load and validate with schemas
+  const hasConfigFile = await fileExists(CONFIG_FILENAME);
   const test = await loadTestDefinition(absoluteTarget);
   const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
 
@@ -1966,17 +1985,9 @@ const generateCommand = async (
   }
 
   // Validate environment variables in config
-  const { parse } = await import('yaml');
-  const configContent = await fs.readFile(CONFIG_FILENAME, 'utf8');
-  const parsedConfig = parse(configContent);
-  const configMissing = collectMissingEnvVars(parsedConfig);
-
-  if (configMissing.length > 0) {
-    const projectRoot = await findProjectRoot(CONFIG_FILENAME);
-    const canContinue = await validateEnvVars(configMissing, projectRoot || process.cwd());
-    if (!canContinue) {
-      process.exit(1);
-    }
+  const canContinue = await validateConfigEnvVars();
+  if (!canContinue) {
+    process.exit(1);
   }
 
   const config = await loadIntellitesterConfig(CONFIG_FILENAME);
@@ -2017,19 +2028,7 @@ const generateCommand = async (
   }
 };
 
-interface RunOptions {
-  visible?: boolean;
-  browser?: BrowserName;
-  interactive?: boolean;
-  debug?: boolean;
-  sessionId?: string;
-  trackDir?: string;
-  testSizes?: string[];
-  skipTrackingSetup?: boolean;
-  skipWebServerStart?: boolean;
-}
-
-const runWorkflowCommand = async (file: string, options: RunOptions): Promise<void> => {
+const runWorkflowCommand = async (file: string, options: CLIRunOptions): Promise<void> => {
   const workflowPath = path.resolve(file);
 
   if (!(await fileExists(workflowPath))) {
@@ -2047,42 +2046,25 @@ const runWorkflowCommand = async (file: string, options: RunOptions): Promise<vo
   const workflowContent = await fs.readFile(workflowPath, 'utf8');
   const parsedWorkflow = parse(workflowContent);
 
-  const hasConfigFile = await fileExists(CONFIG_FILENAME);
-  let parsedConfig: unknown = undefined;
-  if (hasConfigFile) {
-    const configContent = await fs.readFile(CONFIG_FILENAME, 'utf8');
-    parsedConfig = parse(configContent);
-  }
-
-  // Collect missing env vars from both config and workflow
-  const configMissing = parsedConfig ? collectMissingEnvVars(parsedConfig) : [];
-  const workflowMissing = collectMissingEnvVars(parsedWorkflow);
-  const allMissing = [...new Set([...configMissing, ...workflowMissing])];
-
-  if (allMissing.length > 0) {
-    const projectRoot = await findProjectRoot(workflowPath);
-    const canContinue = await validateEnvVars(allMissing, projectRoot || process.cwd());
-    if (!canContinue) {
-      process.exit(1);
-    }
+  const canContinue = await validateFileEnvVars({
+    filePath: workflowPath,
+    parsedContent: parsedWorkflow,
+  });
+  if (!canContinue) {
+    process.exit(1);
   }
 
   // Now load and validate with schemas
   const workflow = await loadWorkflowDefinition(workflowPath);
 
   // Load config to get AI settings (for interactive mode)
+  const hasConfigFile = await fileExists(CONFIG_FILENAME);
   const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
 
   const result = await runWorkflow(workflow, workflowPath, {
-    headed: options.visible,
-    browser: options.browser,
-    interactive: options.interactive,
-    debug: options.debug,
+    ...mapCLIToExecutorOptions(options),
     aiConfig: config?.ai,
     webServer: config?.webServer,
-    sessionId: options.sessionId,
-    trackDir: options.trackDir,
-    testSizes: options.testSizes as ('xs' | 'sm' | 'md' | 'lg' | 'xl')[] | undefined,
   });
 
   // Print results
@@ -2108,7 +2090,7 @@ const runWorkflowCommand = async (file: string, options: RunOptions): Promise<vo
   process.exit(result.status === 'passed' ? 0 : 1);
 };
 
-const runPipelineCommand = async (file: string, options: RunOptions): Promise<void> => {
+const runPipelineCommand = async (file: string, options: CLIRunOptions): Promise<void> => {
   const pipelinePath = path.resolve(file);
 
   if (!(await fileExists(pipelinePath))) {
@@ -2126,41 +2108,18 @@ const runPipelineCommand = async (file: string, options: RunOptions): Promise<vo
   const pipelineContent = await fs.readFile(pipelinePath, 'utf8');
   const parsedPipeline = parse(pipelineContent);
 
-  const hasConfigFile = await fileExists(CONFIG_FILENAME);
-  let parsedConfig: unknown = undefined;
-  if (hasConfigFile) {
-    const configContent = await fs.readFile(CONFIG_FILENAME, 'utf8');
-    parsedConfig = parse(configContent);
-  }
-
-  // Collect missing env vars from both config and pipeline
-  const configMissing = parsedConfig ? collectMissingEnvVars(parsedConfig) : [];
-  const pipelineMissing = collectMissingEnvVars(parsedPipeline);
-  const allMissing = [...new Set([...configMissing, ...pipelineMissing])];
-
-  if (allMissing.length > 0) {
-    const projectRoot = await findProjectRoot(pipelinePath);
-    const canContinue = await validateEnvVars(allMissing, projectRoot || process.cwd());
-    if (!canContinue) {
-      process.exit(1);
-    }
+  const canContinue = await validateFileEnvVars({
+    filePath: pipelinePath,
+    parsedContent: parsedPipeline,
+  });
+  if (!canContinue) {
+    process.exit(1);
   }
 
   // Now load and validate with schemas
   const pipeline = await loadPipelineDefinition(pipelinePath);
 
-  // Load config to get AI settings (for interactive mode)
-  const _config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
-
-  const result = await runPipeline(pipeline, pipelinePath, {
-    headed: options.visible,
-    browser: options.browser,
-    interactive: options.interactive,
-    debug: options.debug,
-    sessionId: options.sessionId,
-    trackDir: options.trackDir,
-    testSizes: options.testSizes as ('xs' | 'sm' | 'md' | 'lg' | 'xl')[] | undefined,
-  });
+  const result = await runPipeline(pipeline, pipelinePath, mapCLIToExecutorOptions(options));
 
   // Print results
   console.log(`\nPipeline: ${pipeline.name}`);
@@ -2326,6 +2285,24 @@ const main = async (): Promise<void> => {
             // Mark CLI as owner of tracking resources
             process.env.INTELLITESTER_TRACKING_OWNER = 'cli';
             cliOwnsTracking = true;
+
+            // Write tracking env vars to .env file so tools like wrangler can access them
+            // (wrangler reads from .env file, not process.env)
+            const envPath = path.join(previewCwd, '.env');
+            const trackingEnvLines = [
+              '',
+              '# Intellitester tracking (auto-generated, will be cleaned up)',
+              `INTELLITESTER_SESSION_ID=${sessionId}`,
+              process.env.INTELLITESTER_TRACK_URL ? `INTELLITESTER_TRACK_URL=${process.env.INTELLITESTER_TRACK_URL}` : '',
+              `INTELLITESTER_TRACK_FILE=${process.env.INTELLITESTER_TRACK_FILE}`,
+            ].filter(Boolean).join('\n') + '\n';
+
+            try {
+              await fs.appendFile(envPath, trackingEnvLines);
+              console.log('Added tracking env vars to .env file');
+            } catch (error) {
+              console.warn('Failed to write tracking env vars to .env file:', error);
+            }
           }
 
           const { cleanup } = await buildAndPreview(config, previewCwd, options.freshBuild);
@@ -2338,7 +2315,7 @@ const main = async (): Promise<void> => {
           ? options.testSizes.split(',').map(s => s.trim()).filter(s => validSizes.includes(s))
           : undefined;
 
-        const runOpts: RunOptions = {
+        const runOpts: CLIRunOptions = {
           visible: options.visible,
           browser,
           interactive: options.interactive,

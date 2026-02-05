@@ -372,7 +372,7 @@ class WebServerManager {
       shell: true,
       stdio: 'pipe',
       cwd,
-      detached: false,
+      detached: true, // Create new process group so we can kill all children
     });
     this.currentUrl = url;
     this.currentCwd = cwd;
@@ -503,8 +503,17 @@ class WebServerManager {
       }
     });
 
-    // Send SIGTERM
-    process.kill('SIGTERM');
+    // Send SIGTERM to process group (negative PID) to kill children too
+    const pid = process.pid;
+    try {
+      if (pid) {
+        globalThis.process.kill(-pid, 'SIGTERM');
+      } else {
+        process.kill('SIGTERM');
+      }
+    } catch {
+      process.kill('SIGTERM');
+    }
 
     // Wait for exit with a timeout
     const timeoutPromise = new Promise<void>((resolve) => {
@@ -512,7 +521,15 @@ class WebServerManager {
         // If still alive after 5 seconds, force kill
         if (!process.killed && process.exitCode === null) {
           console.log('Server did not stop gracefully, sending SIGKILL...');
-          process.kill('SIGKILL');
+          try {
+            if (pid) {
+              globalThis.process.kill(-pid, 'SIGKILL');
+            } else {
+              process.kill('SIGKILL');
+            }
+          } catch {
+            process.kill('SIGKILL');
+          }
         }
         resolve();
       }, 5000);
@@ -535,12 +552,31 @@ class WebServerManager {
   }
 
   /**
-   * Synchronous kill for signal handlers - doesn't wait for termination
+   * Synchronous kill for signal handlers - kills process group to ensure children die too
    */
   kill(): void {
     if (this.serverProcess && !this.serverProcess.killed) {
       console.log('Stopping server...');
-      this.serverProcess.kill('SIGTERM');
+      const pid = this.serverProcess.pid;
+      if (pid) {
+        try {
+          // Kill the entire process group (negative PID) to kill shell children too
+          process.kill(-pid, 'SIGTERM');
+        } catch {
+          // Fallback to regular kill if process group kill fails
+          this.serverProcess.kill('SIGTERM');
+        }
+        // Also send SIGKILL after a short delay to force termination
+        setTimeout(() => {
+          try {
+            if (pid) process.kill(-pid, 'SIGKILL');
+          } catch {
+            // Process already dead, ignore
+          }
+        }, 1000);
+      } else {
+        this.serverProcess.kill('SIGTERM');
+      }
     }
     // Delete marker file synchronously for signal handlers
     if (this.currentCwd) {

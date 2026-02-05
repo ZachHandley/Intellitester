@@ -13,5 +13,12 @@ export default defineConfig({
         singleThread: true, // Run integration tests sequentially to avoid resource contention
       },
     },
+    // Global setup and teardown
+    globalSetup: './tests/integration/setup.ts',
+    globalTeardown: './tests/integration/teardown.ts',
+    // Retry flaky tests once
+    retry: 1,
+    // Fail fast on first failure in CI
+    bail: process.env.CI ? 1 : 0,
   },
 });

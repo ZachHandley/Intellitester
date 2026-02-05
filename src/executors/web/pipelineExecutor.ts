@@ -30,21 +30,13 @@ import { type BrowserName } from './playwrightExecutor';
 import { webServerManager } from './webServerManager.js';
 import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js';
 import type { CleanupConfig } from '../../core/cleanup/types.js';
+import type { ExecutorOptions } from '../../core/options.js';
 
-export interface PipelineOptions {
-  headed?: boolean;
-  browser?: BrowserName;
-  interactive?: boolean;
-  debug?: boolean;
-  sessionId?: string;
-  trackDir?: string;
-  /** Viewport sizes to test at. Can be predefined ('xs', 'sm', 'md', 'lg', 'xl') or custom 'WxH' format (e.g., '1920x1080'). */
-  testSizes?: string[];
-  /** Skip tracking setup (CLI already owns tracking) */
-  skipTrackingSetup?: boolean;
-  /** Skip web server start (CLI already started it) */
-  skipWebServerStart?: boolean;
-}
+/**
+ * Options for running a pipeline.
+ * Uses the base ExecutorOptions directly since pipelines don't need additional options.
+ */
+export type PipelineOptions = ExecutorOptions;
 
 const getBrowser = (browser: BrowserName): BrowserType => {
   switch (browser) {

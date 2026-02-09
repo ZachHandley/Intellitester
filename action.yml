@@ -91,6 +91,8 @@ runs:
     - name: Install package manager
       if: steps.detect-pm.outputs.pm != 'npm'
       shell: bash
+      env:
+        NPM_CONFIG_LOGLEVEL: error
       run: npm install -g ${{ steps.detect-pm.outputs.pm }}@latest
 
     - name: Configure npm registry
@@ -126,6 +128,7 @@ runs:
         PM: ${{ steps.detect-pm.outputs.pm }}
         ACTION_REF: ${{ github.action_ref }}
         WORK_DIR: ${{ inputs.working-directory }}
+        NPM_CONFIG_LOGLEVEL: error
       run: |
         add_dev() {
           # Detect workspace from working directory
@@ -255,6 +258,8 @@ runs:
     - name: Install dependencies
       shell: bash
       working-directory: ${{ inputs.working-directory }}
+      env:
+        NPM_CONFIG_LOGLEVEL: error
       run: ${{ steps.detect-pm.outputs.pm }} install
 
     - name: Get Playwright version

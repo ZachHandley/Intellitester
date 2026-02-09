@@ -38,6 +38,10 @@ function formatAction(action: Action): string {
       return action.target ? `wait for element (${formatLocator(action.target)})` : `wait ${action.timeout}ms`;
     case 'scroll':
       return action.target ? `scroll to element (${formatLocator(action.target)})` : `scroll ${action.direction || 'down'}`;
+    case 'evaluate': {
+      const evaluateAction = action as Extract<Action, { type: 'evaluate' }>;
+      return `evaluate page state (expected: ${Array.isArray(evaluateAction.expected) ? evaluateAction.expected.join(', ') : evaluateAction.expected})`;
+    }
     default:
       return action.type;
   }

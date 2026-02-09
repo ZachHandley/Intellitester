@@ -186,6 +186,68 @@ When an action fails:
 [OK] tap
 ```
 
+## Screenshot Evaluation (evaluate)
+
+The `evaluate` action analyzes screenshots to verify page state — no DOM selectors needed. It uses OCR (via tesseract.js WASM) to extract text from the page, with optional AI vision fallback for complex evaluations.
+
+### Basic Usage
+
+```yaml
+steps:
+  # Simple text check (OCR, no API key needed)
+  - type: evaluate
+    expected: "Payment successful"
+
+  # Multiple expected strings (ALL must match)
+  - type: evaluate
+    expected:
+      - "Payment successful"
+      - "Order #"
+
+  # Regex patterns
+  - type: evaluate
+    expected: "Order #\\d{5,}"
+    regex: true
+```
+
+### Evaluation Modes
+
+| Mode | Description | API Key Required |
+|------|-------------|-----------------|
+| `auto` (default) | OCR first, falls back to AI vision if OCR fails | Only if OCR fails |
+| `ocr` | OCR only, deterministic, fast | No |
+| `ai` | AI vision only, handles complex visual states | Yes |
+
+```yaml
+# OCR-only (no API calls)
+- type: evaluate
+  mode: ocr
+  expected: "Success"
+
+# AI vision with custom prompt
+- type: evaluate
+  mode: ai
+  prompt: "Does this page show a green checkmark with a confirmation message?"
+  expected: "Payment successful"
+```
+
+### Properties
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `expected` | string or string[] | (required) | Text to find in the screenshot |
+| `mode` | `ocr` \| `ai` \| `auto` | `auto` | Evaluation strategy |
+| `regex` | boolean | `false` | Treat expected strings as regex patterns |
+| `prompt` | string | (auto) | Custom prompt for AI mode |
+| `waitBefore` | number | `500` | ms to wait before screenshot |
+| `fullPage` | boolean | `true` | Full page or viewport only |
+| `confidence` | number (0-100) | `60` | Min OCR confidence threshold |
+
+### When to Use `evaluate` vs `assert`
+
+- **`assert`** — You can target a specific DOM element with a selector
+- **`evaluate`** — DOM selectors are unreliable: iframes, dynamic content, animations, third-party widgets (Stripe, PayPal), or when you just want to check "does the page say X?"
+
 ## Iframe Targeting (frame)
 
 Target elements inside iframes using the `frame` property. Essential for payment forms (Stripe, PayPal), embedded widgets, and third-party integrations.

@@ -2,6 +2,7 @@ import { Anthropic } from '@llamaindex/anthropic';
 import { OpenAI } from '@llamaindex/openai';
 import { Ollama } from '@llamaindex/ollama';
 import type { AIConfig, AIProvider } from './types';
+import type { ChatMessage } from 'llamaindex';
 
 function resolveEnvVars(value: string): string {
   return value.replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || '');
@@ -28,6 +29,43 @@ class AnthropicProvider implements AIProvider {
       messages.push({ role: 'system', content: systemPrompt });
     }
     messages.push({ role: 'user', content: prompt });
+
+    const response = await this.client.chat({ messages });
+
+    const content = response.message.content;
+    if (!content) {
+      throw new Error('No content in Anthropic response');
+    }
+    return typeof content === 'string' ? content : JSON.stringify(content);
+  }
+
+  async generateVisionCompletion(
+    prompt: string,
+    imageBase64: string,
+    imageMimeType: string,
+    systemPrompt?: string,
+  ): Promise<string> {
+    const messages: ChatMessage[] = [];
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:${imageMimeType};base64,${imageBase64}`,
+          },
+        },
+        {
+          type: 'text',
+          text: prompt,
+        },
+      ],
+    });
 
     const response = await this.client.chat({ messages });
 
@@ -71,6 +109,43 @@ class OpenAIProvider implements AIProvider {
     }
     return typeof content === 'string' ? content : JSON.stringify(content);
   }
+
+  async generateVisionCompletion(
+    prompt: string,
+    imageBase64: string,
+    imageMimeType: string,
+    systemPrompt?: string,
+  ): Promise<string> {
+    const messages: ChatMessage[] = [];
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:${imageMimeType};base64,${imageBase64}`,
+          },
+        },
+        {
+          type: 'text',
+          text: prompt,
+        },
+      ],
+    });
+
+    const response = await this.client.chat({ messages });
+
+    const content = response.message.content;
+    if (!content) {
+      throw new Error('No content in OpenAI response');
+    }
+    return typeof content === 'string' ? content : JSON.stringify(content);
+  }
 }
 
 class OllamaProvider implements AIProvider {
@@ -94,6 +169,43 @@ class OllamaProvider implements AIProvider {
       messages.push({ role: 'system', content: systemPrompt });
     }
     messages.push({ role: 'user', content: prompt });
+
+    const response = await this.client.chat({ messages });
+
+    const content = response.message.content;
+    if (!content) {
+      throw new Error('No content in Ollama response');
+    }
+    return typeof content === 'string' ? content : JSON.stringify(content);
+  }
+
+  async generateVisionCompletion(
+    prompt: string,
+    imageBase64: string,
+    imageMimeType: string,
+    systemPrompt?: string,
+  ): Promise<string> {
+    const messages: ChatMessage[] = [];
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:${imageMimeType};base64,${imageBase64}`,
+          },
+        },
+        {
+          type: 'text',
+          text: prompt,
+        },
+      ],
+    });
 
     const response = await this.client.chat({ messages });
 
@@ -136,6 +248,43 @@ class GroqProvider implements AIProvider {
     }
     return typeof content === 'string' ? content : JSON.stringify(content);
   }
+
+  async generateVisionCompletion(
+    prompt: string,
+    imageBase64: string,
+    imageMimeType: string,
+    systemPrompt?: string,
+  ): Promise<string> {
+    const messages: ChatMessage[] = [];
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:${imageMimeType};base64,${imageBase64}`,
+          },
+        },
+        {
+          type: 'text',
+          text: prompt,
+        },
+      ],
+    });
+
+    const response = await this.client.chat({ messages });
+
+    const content = response.message.content;
+    if (!content) {
+      throw new Error('No content in GROQ response');
+    }
+    return typeof content === 'string' ? content : JSON.stringify(content);
+  }
 }
 
 class OpenRouterProvider implements AIProvider {
@@ -160,6 +309,43 @@ class OpenRouterProvider implements AIProvider {
       messages.push({ role: 'system', content: systemPrompt });
     }
     messages.push({ role: 'user', content: prompt });
+
+    const response = await this.client.chat({ messages });
+
+    const content = response.message.content;
+    if (!content) {
+      throw new Error('No content in OpenRouter response');
+    }
+    return typeof content === 'string' ? content : JSON.stringify(content);
+  }
+
+  async generateVisionCompletion(
+    prompt: string,
+    imageBase64: string,
+    imageMimeType: string,
+    systemPrompt?: string,
+  ): Promise<string> {
+    const messages: ChatMessage[] = [];
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+
+    messages.push({
+      role: 'user',
+      content: [
+        {
+          type: 'image_url',
+          image_url: {
+            url: `data:${imageMimeType};base64,${imageBase64}`,
+          },
+        },
+        {
+          type: 'text',
+          text: prompt,
+        },
+      ],
+    });
 
     const response = await this.client.chat({ messages });
 

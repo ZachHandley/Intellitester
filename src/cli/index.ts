@@ -727,10 +727,10 @@ Press a keyboard key.
 # Common keys: Enter, Tab, Escape, ArrowDown, ArrowUp, Backspace, Delete
 \`\`\`
 
-### Assertion Actions
+### Assertion & Evaluation Actions
 
 #### \`assert\`
-Assert that an element exists or contains expected text.
+Assert that an element exists or contains expected text. Uses DOM selectors.
 
 \`\`\`yaml
 # Assert element exists
@@ -746,6 +746,60 @@ Assert that an element exists or contains expected text.
 - type: assert
   target: { text: "Login successful" }
 \`\`\`
+
+#### \`evaluate\`
+Evaluate page state by analyzing a screenshot. Uses OCR to extract text and/or AI vision to assess visual state. Unlike \`assert\`, this does not require DOM selectors — it reads what's visually on the page.
+
+**Modes:**
+- \`auto\` (default) — Try OCR first, fall back to AI vision if OCR fails or confidence is low
+- \`ocr\` — OCR only, no AI calls, no API key needed
+- \`ai\` — AI vision only, requires a vision-capable AI provider
+
+\`\`\`yaml
+# Simple text check (auto mode: OCR first, AI fallback)
+- type: evaluate
+  expected: "Payment successful"
+
+# Multiple expected strings (ALL must be found)
+- type: evaluate
+  expected:
+    - "Payment successful"
+    - "Order #"
+    - "Thank you"
+
+# Regex pattern matching
+- type: evaluate
+  expected: "Order #\\\\d{5,}"
+  regex: true
+
+# Force AI vision mode with custom prompt
+- type: evaluate
+  mode: ai
+  prompt: "Does this page show a completed Stripe checkout with a green checkmark?"
+  expected: "Payment successful"
+
+# OCR-only (no AI fallback, no API key needed)
+- type: evaluate
+  mode: ocr
+  expected: "Payment successful"
+  confidence: 70
+\`\`\`
+
+**Properties:**
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| \`expected\` | string or string[] | (required) | Text to find in the screenshot |
+| \`mode\` | \`ocr\` \\| \`ai\` \\| \`auto\` | \`auto\` | Evaluation strategy |
+| \`regex\` | boolean | \`false\` | Treat expected strings as regex patterns |
+| \`prompt\` | string | (auto-generated) | Custom prompt for AI mode |
+| \`waitBefore\` | number | \`500\` | ms to wait before screenshot for visual stability |
+| \`fullPage\` | boolean | \`true\` | Capture full page or just viewport |
+| \`confidence\` | number (0-100) | \`60\` | Min OCR confidence; below this, falls back to AI in auto mode |
+
+**When to use \`evaluate\` vs \`assert\`:**
+- Use \`assert\` when you can target a specific DOM element
+- Use \`evaluate\` when DOM selectors are unreliable (iframes, dynamic content, animations, third-party widgets like Stripe)
 
 ### Wait Actions
 
@@ -1720,10 +1774,10 @@ steps:
   - type: tap
     target: { testId: submit-payment }
 
-  # Verify success
-  - type: wait
-    target: { text: "Payment successful" }
-    timeout: 30000
+  # Verify success using screenshot evaluation (no DOM selectors needed)
+  - type: evaluate
+    expected: "Payment successful"
+    waitBefore: 2000
 \`\`\`
 
 ---

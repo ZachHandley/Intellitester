@@ -70,6 +70,8 @@ function formatActionName(step: StepResult, index: number): string {
       return `step-${index + 1}: wait for branch`;
     case 'log':
       return `step-${index + 1}: log`;
+    case 'evaluate':
+      return `step-${index + 1}: evaluate`;
     default: {
       const _exhaustiveCheck: never = action;
       return `step-${index + 1}: unknown action`;

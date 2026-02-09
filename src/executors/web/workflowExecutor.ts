@@ -32,6 +32,7 @@ import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js
 import type { CleanupConfig } from '../../core/cleanup/types.js';
 import type { WorkflowConfig } from '../../core/workflowSchema.js';
 import type { ExecutorOptions } from '../../core/options.js';
+import { evaluate, terminateOCRWorker } from '../../ai/evaluator';
 
 /**
  * Options for running a workflow.
@@ -531,6 +532,8 @@ async function runTestInWorkflow(
                   }
                   break;
                 }
+                case 'evaluate':
+                  throw new Error('Evaluate action in nested context (conditional/waitForBranch) is not yet supported');
                 case 'fail': {
                   throw new Error(nestedAction.message);
                 }
@@ -539,6 +542,58 @@ async function runTestInWorkflow(
               }
             }
             break;
+          }
+          case 'evaluate': {
+            const evalAction = action as Extract<Action, { type: 'evaluate' }>;
+            // Wait for visual stability
+            await page.waitForLoadState('domcontentloaded').catch(() => {});
+            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+            const waitBefore = evalAction.waitBefore ?? 500;
+            if (waitBefore > 0) {
+              await page.waitForTimeout(waitBefore);
+            }
+
+            // Take screenshot
+            const evalScreenshotPath = path.join(screenshotDir, `evaluate-step-${index + 1}.png`);
+            const screenshotBuffer = await page.screenshot({
+              path: evalScreenshotPath,
+              fullPage: evalAction.fullPage ?? true,
+            });
+
+            // Interpolate expected values
+            const expectedRaw = evalAction.expected;
+            const expectedArray = Array.isArray(expectedRaw)
+              ? expectedRaw.map(e => interpolate(e))
+              : [interpolate(expectedRaw)];
+
+            // Run evaluation
+            const evalResult = await evaluate({
+              expected: expectedArray,
+              mode: evalAction.mode ?? 'auto',
+              regex: evalAction.regex ?? false,
+              prompt: evalAction.prompt,
+              confidence: evalAction.confidence ?? 60,
+              screenshotBuffer,
+              screenshotPath: evalScreenshotPath,
+              aiConfig: options.aiConfig,
+            });
+
+            if (debugMode) {
+              console.log(`  [DEBUG] Evaluate result: ${evalResult.passed ? 'PASSED' : 'FAILED'} (${evalResult.mode})`);
+              console.log(`  [DEBUG] Reason: ${evalResult.reason}`);
+            }
+
+            if (!evalResult.passed) {
+              throw new Error(`Evaluate failed (${evalResult.mode} mode): ${evalResult.reason}`);
+            }
+
+            results.push({
+              action,
+              status: 'passed',
+              screenshotPath: evalScreenshotPath,
+              logOutput: `Evaluate passed (${evalResult.mode}): ${evalResult.reason}`,
+            });
+            continue;
           }
           case 'fail': {
             throw new Error(action.message);
@@ -648,6 +703,8 @@ async function runTestInWorkflow(
                       }
                       break;
                     }
+                    case 'evaluate':
+                      throw new Error('Evaluate action in nested context (conditional/waitForBranch) is not yet supported');
                     case 'fail': {
                       throw new Error(nestedAction.message);
                     }
@@ -1600,6 +1657,9 @@ export async function runWorkflow(
     // Close browser
     await browserContext.close();
     await browser.close();
+
+    // Cleanup OCR worker
+    await terminateOCRWorker();
 
     // Only clean up resources we own
     if (ownsTracking) {

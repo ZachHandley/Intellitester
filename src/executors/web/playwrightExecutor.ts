@@ -25,6 +25,7 @@ import { TrackingServer, initFileTracking, mergeFileTrackedResources } from '../
 import { track as trackResource } from '../../integration/index.js';
 import type { TrackedResource as IntegrationTrackedResource } from '../../integration/index.js';
 import { webServerManager, type WebServerConfig } from './webServerManager.js';
+import { evaluate, terminateOCRWorker } from '../../ai/evaluator';
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
 
@@ -724,6 +725,8 @@ async function executeActionWithRetry(
           break;
         case 'screenshot':
           throw new Error('Screenshot action should be handled separately');
+        case 'evaluate':
+          throw new Error('Evaluate action should be handled separately');
         case 'setVar': {
           let value: string;
           if (action.value) {
@@ -1636,6 +1639,70 @@ export const runWebTest = async (
             continue;
           }
 
+          // Handle evaluate separately since it captures screenshots and returns special results
+          if (action.type === 'evaluate') {
+            const evalAction = action as Extract<Action, { type: 'evaluate' }>;
+            const waitBefore = evalAction.waitBefore ?? 500;
+
+            if (waitBefore > 0) {
+              if (debugMode) {
+                console.log(`[DEBUG] Evaluate: waiting ${waitBefore}ms for visual stability`);
+              }
+              await page.waitForTimeout(waitBefore);
+            }
+
+            // Wait for page to settle
+            const timing = getBrowserTimingConfig(browserName ?? 'chromium');
+            await waitForPageStable(page, timing.screenshotNetworkIdleTimeout);
+
+            // Take screenshot
+            await ensureScreenshotDir(screenshotDir);
+            const evalScreenshotPath = path.join(screenshotDir, `evaluate-step-${index + 1}.png`);
+            const screenshotBuffer = await page.screenshot({
+              path: evalScreenshotPath,
+              fullPage: evalAction.fullPage ?? true,
+            });
+
+            // Interpolate expected values
+            const expectedRaw = evalAction.expected;
+            const expectedArray = Array.isArray(expectedRaw)
+              ? expectedRaw.map(e => interpolateVariables(e, executionContext.variables))
+              : [interpolateVariables(expectedRaw, executionContext.variables)];
+
+            // Run evaluation
+            const evalResult = await evaluate({
+              expected: expectedArray,
+              mode: evalAction.mode ?? 'auto',
+              regex: evalAction.regex ?? false,
+              prompt: evalAction.prompt,
+              confidence: evalAction.confidence ?? 60,
+              screenshotBuffer,
+              screenshotPath: evalScreenshotPath,
+              aiConfig: options.aiConfig,
+            });
+
+            if (debugMode) {
+              console.log(`[DEBUG] Evaluate result: ${evalResult.passed ? 'PASSED' : 'FAILED'} (${evalResult.mode})`);
+              console.log(`[DEBUG] Reason: ${evalResult.reason}`);
+              if (evalResult.ocrText) {
+                console.log(`[DEBUG] OCR text (first 200 chars): ${evalResult.ocrText.slice(0, 200)}`);
+              }
+            }
+
+            if (!evalResult.passed) {
+              throw new Error(`Evaluate failed (${evalResult.mode} mode): ${evalResult.reason}`);
+            }
+
+            sizeResults.push({
+              action,
+              status: 'passed',
+              screenshotPath: evalScreenshotPath,
+              logOutput: `Evaluate passed (${evalResult.mode}): ${evalResult.reason}`,
+            });
+            options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+            continue;
+          }
+
           // Use the new executeActionWithRetry for all other actions
           const actionExtras = await executeActionWithRetry(page, action, index, {
             baseUrl: options.baseUrl ?? test.config?.web?.baseUrl,
@@ -1731,6 +1798,7 @@ export const runWebTest = async (
     }
 
     await browser.close();
+    await terminateOCRWorker();
   } catch (cleanupError) {
     console.error('Error during cleanup:', cleanupError);
   }

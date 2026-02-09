@@ -247,6 +247,26 @@ const failActionSchema = z.object({
   message: nonEmptyString.describe('Error message to display when test fails'),
 }).describe('Explicitly fail the test with a custom message');
 
+const evaluateActionSchema = z.object({
+  type: z.literal('evaluate'),
+  expected: z.union([
+    z.string(),
+    z.array(z.string()),
+  ]).describe('Text to find in screenshot (substring or regex)'),
+  mode: z.enum(['ocr', 'ai', 'auto']).optional()
+    .describe('ocr=OCR only, ai=LLM vision only, auto=OCR first then AI fallback (default: auto)'),
+  regex: z.boolean().optional()
+    .describe('Treat expected as regex patterns (default: false)'),
+  prompt: z.string().optional()
+    .describe('Custom prompt for AI mode'),
+  waitBefore: z.number().int().nonnegative().optional()
+    .describe('ms to wait before screenshot for visual stability (default: 500)'),
+  fullPage: z.boolean().optional()
+    .describe('Full page or viewport only (default: true)'),
+  confidence: z.number().min(0).max(100).optional()
+    .describe('Min OCR confidence threshold, below falls back to AI in auto mode (default: 60)'),
+}).describe('Evaluate page state via screenshot analysis (OCR and/or AI vision)');
+
 // Base action schema without conditional (used for nested steps in conditional)
 const BaseActionSchema = z.discriminatedUnion('type', [
   navigateActionSchema,
@@ -274,6 +294,7 @@ const BaseActionSchema = z.discriminatedUnion('type', [
   waitForSelectorActionSchema,
   logActionSchema,
   failActionSchema,
+  evaluateActionSchema,
 ]);
 
 const TrackableBaseActionSchema = z.intersection(BaseActionSchema, trackableSchema);

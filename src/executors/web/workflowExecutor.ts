@@ -84,6 +84,27 @@ export interface ExecutionContext {
 
 const defaultScreenshotDir = path.join(process.cwd(), 'artifacts', 'screenshots');
 
+const interpolateTrackMetadata = (
+  value: unknown,
+  variables: Map<string, string>
+): unknown => {
+  if (typeof value === 'string') {
+    return interpolateVariables(value, variables);
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => interpolateTrackMetadata(entry, variables));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        interpolateTrackMetadata(entry, variables),
+      ])
+    );
+  }
+  return value;
+};
+
 const getBrowser = (browser: BrowserName): BrowserType => {
   switch (browser) {
     case 'firefox':
@@ -178,8 +199,9 @@ async function runTestInWorkflow(
     stepExtras?: Record<string, unknown>
   ): IntegrationTrackedResource | null => {
     if (!('track' in action)) return null;
-    const track = (action as { track?: Record<string, unknown> }).track;
-    if (!track || typeof track !== 'object') return null;
+    const rawTrack = (action as { track?: Record<string, unknown> }).track;
+    if (!rawTrack || typeof rawTrack !== 'object') return null;
+    const track = interpolateTrackMetadata(rawTrack, context.variables) as Record<string, unknown>;
     if (typeof track.type !== 'string' || typeof track.id !== 'string') return null;
 
     const { includeStepContext, ...rest } = track;

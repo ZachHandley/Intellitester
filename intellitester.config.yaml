@@ -1,0 +1,21 @@
+defaults:
+  timeout: 30000
+  screenshots: on-failure
+
+platforms:
+  web:
+    baseUrl: http://localhost:3000
+    headless: false
+
+# AI configuration - supports: anthropic, openai, ollama, groq, openrouter
+ai:
+  provider: openrouter
+  model: anthropic/claude-3.5-sonnet
+  apiKey: ${OPENROUTER_API_KEY}
+  temperature: 0.2
+  maxTokens: 4096
+
+# AI-assisted test healing - automatically fix broken selectors
+healing:
+  enabled: true
+  maxAttempts: 3

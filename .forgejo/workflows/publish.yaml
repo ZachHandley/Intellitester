@@ -70,7 +70,7 @@ jobs:
           echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_ACCESS_TOKEN }}" >> ~/.npmrc
 
       - name: Restore cache
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: restore
           key: pnpm-publish-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -146,7 +146,7 @@ jobs:
 
       - name: Save cache
         if: always()
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: save
           key: pnpm-publish-${{ hashFiles('**/pnpm-lock.yaml') }}

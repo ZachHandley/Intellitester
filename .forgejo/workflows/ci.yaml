@@ -41,7 +41,7 @@ jobs:
           echo "//forge.blackleafdigital.com/api/packages/blackleafdigital/npm/:_authToken=${{ secrets.FORGEJO_ACTIONS_TOKEN }}" >> ~/.npmrc
 
       - name: Restore cache
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: restore
           key: pnpm-lint-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -60,7 +60,7 @@ jobs:
 
       - name: Save cache
         if: always()
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: save
           key: pnpm-lint-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -93,7 +93,7 @@ jobs:
           echo "//forge.blackleafdigital.com/api/packages/blackleafdigital/npm/:_authToken=${{ secrets.FORGEJO_ACTIONS_TOKEN }}" >> ~/.npmrc
 
       - name: Restore cache
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: restore
           key: pnpm-typecheck-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -112,7 +112,7 @@ jobs:
 
       - name: Save cache
         if: always()
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: save
           key: pnpm-typecheck-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -145,7 +145,7 @@ jobs:
           echo "//forge.blackleafdigital.com/api/packages/blackleafdigital/npm/:_authToken=${{ secrets.FORGEJO_ACTIONS_TOKEN }}" >> ~/.npmrc
 
       - name: Restore cache
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: restore
           key: pnpm-build-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -164,7 +164,7 @@ jobs:
 
       - name: Save cache
         if: always()
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: save
           key: pnpm-build-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -197,7 +197,7 @@ jobs:
           echo "//forge.blackleafdigital.com/api/packages/blackleafdigital/npm/:_authToken=${{ secrets.FORGEJO_ACTIONS_TOKEN }}" >> ~/.npmrc
 
       - name: Restore cache
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: restore
           key: pnpm-test-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -219,7 +219,7 @@ jobs:
 
       - name: Save cache
         if: always()
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: save
           key: pnpm-test-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -252,7 +252,7 @@ jobs:
           echo "//forge.blackleafdigital.com/api/packages/blackleafdigital/npm/:_authToken=${{ secrets.FORGEJO_ACTIONS_TOKEN }}" >> ~/.npmrc
 
       - name: Restore cache
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: restore
           key: pnpm-integration-test-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -277,7 +277,7 @@ jobs:
 
       - name: Save cache
         if: always()
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: save
           key: pnpm-integration-test-${{ hashFiles('**/pnpm-lock.yaml') }}
@@ -319,7 +319,7 @@ jobs:
     if: always()
     steps:
       - name: Cleanup old caches
-        uses: https://forge.blackleafdigital.com/BlackLeafDigital/actions/s3-cache@main
+        uses: https://forge.blackleafdigital.com/Public/actions/s3-cache@main
         with:
           mode: cleanup
           max-age-days: '30'

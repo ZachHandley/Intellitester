@@ -17,7 +17,7 @@ jobs:
       - name: Checkout Actions Repo
         uses: actions/checkout@v4
         with:
-          repository: BlackLeafDigital/actions
+          repository: Public/actions
           token: ${{ secrets.FORGEJO_ACTIONS_TOKEN }}
           path: actions-repo
 
@@ -41,4 +41,4 @@ jobs:
           git config user.email "zach@blackleafdigital.com"
           git add intellitester/action.yml
           git diff --staged --quiet || git commit -m "chore: sync intellitester action.yml from Intellitester@${{ github.sha }}"
-          git push https://zachhandley:${{ secrets.FORGEJO_ACTIONS_TOKEN }}@forge.blackleafdigital.com/BlackLeafDigital/actions.git main
+          git push https://zachhandley:${{ secrets.FORGEJO_ACTIONS_TOKEN }}@forge.blackleafdigital.com/Public/actions.git main

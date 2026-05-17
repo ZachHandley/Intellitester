@@ -27,16 +27,31 @@ import {
 import { createTestContext } from '../../integrations/appwrite';
 import { startTrackingServer, type TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
 import { type BrowserName } from './playwrightExecutor';
-import { webServerManager } from './webServerManager.js';
+import { webServerManager, type WebServerInput } from './webServerManager.js';
 import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js';
 import type { CleanupConfig } from '../../core/cleanup/types.js';
 import type { ExecutorOptions } from '../../core/options.js';
+import type { AIConfig } from '../../ai/types';
 
 /**
  * Options for running a pipeline.
- * Uses the base ExecutorOptions directly since pipelines don't need additional options.
+ * Extends base ExecutorOptions with global-config fallbacks supplied by the CLI
+ * (mirrors `WorkflowOptions` so the same fields flow down to workflows).
  */
-export type PipelineOptions = ExecutorOptions;
+export interface PipelineOptions extends ExecutorOptions {
+  /** AI configuration for interactive/healing mode */
+  aiConfig?: AIConfig;
+  /** Web server configuration */
+  webServer?: WebServerInput;
+  /** Fallback baseUrl from global config when pipeline omits it */
+  baseUrl?: string;
+  /** Fallback Appwrite configuration from global config when pipeline omits it */
+  appwriteConfig?: {
+    endpoint: string;
+    projectId: string;
+    apiKey: string;
+  };
+}
 
 const getBrowser = (browser: BrowserName): BrowserType => {
   switch (browser) {
@@ -325,23 +340,26 @@ export async function runPipeline(
   let page = await browserContext.newPage();
   page.setDefaultTimeout(30000);
 
-  // 7. Create shared ExecutionContext for ALL workflows
+  // 7. Create shared ExecutionContext for ALL workflows. Pipeline-defined
+  // Appwrite config wins; otherwise fall back to whatever the caller (CLI)
+  // supplied from the global intellitester.config.yaml.
+  const effectiveAppwrite = pipeline.config?.appwrite
+    ? {
+        endpoint: pipeline.config.appwrite.endpoint,
+        projectId: pipeline.config.appwrite.projectId,
+        apiKey: pipeline.config.appwrite.apiKey,
+      }
+    : options.appwriteConfig;
   const executionContext: ExecutionContext = {
     variables: new Map<string, string>(),
     lastEmail: null,
     emailClient: null,
     appwriteContext: createTestContext(),
-    appwriteConfig: pipeline.config?.appwrite
-      ? {
-          endpoint: pipeline.config.appwrite.endpoint,
-          projectId: pipeline.config.appwrite.projectId,
-          apiKey: pipeline.config.appwrite.apiKey,
-        }
-      : undefined,
+    appwriteConfig: effectiveAppwrite,
   };
 
   // 8. Setup Appwrite tracking ONCE at the start if any workflow may need it
-  if (pipeline.config?.appwrite) {
+  if (effectiveAppwrite) {
     setupAppwriteTracking(page, executionContext);
   }
 
@@ -449,7 +467,8 @@ export async function runPipeline(
             }
           }
 
-          // Execute workflow with shared context
+          // Execute workflow with shared context.
+          // Pipeline config provides fallbacks; workflow config still wins inside runWorkflowWithContext.
           const workflowOptions: WorkflowOptions & {
             page: Page;
             executionContext: ExecutionContext;
@@ -463,7 +482,13 @@ export async function runPipeline(
             skipCleanup: true, // Defer cleanup to pipeline end
             sessionId,
             testStartTime,
-            baseUrl: pipeline.config?.web?.baseUrl, // Pass pipeline's baseUrl as fallback
+            baseUrl: pipeline.config?.web?.baseUrl ?? options.baseUrl,
+            browser: pipeline.config?.web?.browser ?? options.browser,
+            storageState: (pipeline.config?.web?.storageState as WorkflowOptions['storageState']) ?? options.storageState,
+            testSizes: pipeline.config?.web?.testSizes ?? options.testSizes,
+            webServer: options.webServer,
+            aiConfig: options.aiConfig,
+            appwriteConfig: effectiveAppwrite,
           };
 
           const result = await runWorkflowWithContext(

@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -11,14 +10,13 @@ import {
   type Page,
 } from 'playwright';
 
-import type { Action, TestDefinition, WorkflowDefinition } from '../../core/types';
+import type { TestDefinition, WorkflowDefinition } from '../../core/types';
 import { interpolateVariables } from '../../core/interpolation';
 import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import { getBrowserLaunchOptions, parseViewportSize } from './browserOptions.js';
-import { resolveStorageStatePath } from './playwrightExecutor.js';
-import { compileMatcher } from './matchers.js';
+import { executeActionWithRetry, resolveStorageStatePath } from './playwrightExecutor.js';
 import { ResponseLog } from './responseLog.js';
 import {
   createTestContext,
@@ -28,8 +26,6 @@ import {
 } from '../../integrations/appwrite';
 import type { TestContext } from '../../integrations/appwrite/types';
 import { startTrackingServer, type TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
-import { track as trackResource } from '../../integration/index.js';
-import type { TrackedResource as IntegrationTrackedResource } from '../../integration/index.js';
 import { type BrowserName, type StepResult } from './playwrightExecutor';
 import { webServerManager, type WebServerInput } from './webServerManager.js';
 import type { AIConfig } from '../../ai/types';
@@ -37,7 +33,7 @@ import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js
 import type { CleanupConfig } from '../../core/cleanup/types.js';
 import type { WorkflowConfig } from '../../core/workflowSchema.js';
 import type { ExecutorOptions } from '../../core/options.js';
-import { evaluate, terminateOCRWorker } from '../../ai/evaluator';
+import { terminateOCRWorker } from '../../ai/evaluator';
 
 /**
  * Options for running a workflow.
@@ -52,6 +48,12 @@ export interface WorkflowOptions extends Omit<ExecutorOptions, 'storageState'> {
   baseUrl?: string;
   /** Playwright storageState (cookies/localStorage) to apply on every new context. File path string or inline {cookies, origins} object. CLI flag is string-only; YAML config can be either. */
   storageState?: BrowserContextOptions['storageState'];
+  /** Fallback Appwrite configuration from pipeline config */
+  appwriteConfig?: {
+    endpoint: string;
+    projectId: string;
+    apiKey: string;
+  };
 }
 
 export interface WorkflowWithContextOptions extends WorkflowOptions {
@@ -90,27 +92,6 @@ export interface ExecutionContext {
 }
 
 const defaultScreenshotDir = path.join(process.cwd(), 'artifacts', 'screenshots');
-
-const interpolateTrackMetadata = (
-  value: unknown,
-  variables: Map<string, string>
-): unknown => {
-  if (typeof value === 'string') {
-    return interpolateVariables(value, variables);
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => interpolateTrackMetadata(entry, variables));
-  }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
-        key,
-        interpolateTrackMetadata(entry, variables),
-      ])
-    );
-  }
-  return value;
-};
 
 const getBrowser = (browser: BrowserName): BrowserType => {
   switch (browser) {
@@ -154,849 +135,52 @@ function interpolateWorkflowVariables(
 
 /**
  * Runs a single test within the workflow context (shared browser, shared variables).
+ *
+ * The per-action dispatch is delegated to `executeActionWithRetry` so the
+ * workflow path stays structurally in sync with the standalone test path.
+ * Adding a new action type to `executeActionWithRetry` automatically makes
+ * it work here too.
  */
 async function runTestInWorkflow(
   test: TestDefinition,
   page: Page,
   context: ExecutionContext,
   options: WorkflowOptions,
-  workflowDir: string,
+  _workflowDir: string,
   testFilePath: string,
   workflowBaseUrl?: string
 ): Promise<{ status: 'passed' | 'failed'; steps: StepResult[] }> {
   const results: StepResult[] = [];
   const debugMode = options.debug ?? false;
   const screenshotDir = defaultScreenshotDir;
+  const browserName = (options.browser ?? 'chromium') as BrowserName;
+  const baseUrl = test.config?.web?.baseUrl || workflowBaseUrl;
 
-  // Import action execution functions from playwrightExecutor
-  // For now, we'll duplicate the core action logic here
-  // TODO: Refactor playwrightExecutor to export shared functions
-
-  const resolveUrl = (value: string, baseUrl?: string): string => {
-    if (!baseUrl) return value;
-    try {
-      const url = new URL(value, baseUrl);
-      return url.toString();
-    } catch {
-      return value;
-    }
-  };
-
-  // Use the centralized interpolation function with context variables
-  const interpolate = (value: string): string => {
-    return interpolateVariables(value, context.variables);
-  };
-
-  // Network response log for `expectResponse` action — fresh per test.
+  // Network response log for `expectResponse`; the executor reads from it.
   const responseLog = new ResponseLog();
   responseLog.attach(page);
-  let lastStepEndTs = Date.now();
-
-  const resolveLocator = (locator: any) => {
-    if (locator.testId) return page.getByTestId(locator.testId);
-    if (locator.text) return page.getByText(locator.text);
-    if (locator.css) return page.locator(locator.css);
-    if (locator.xpath) return page.locator(`xpath=${locator.xpath}`);
-    if (locator.role) {
-      const options: { name?: string } = {};
-      if (locator.name) options.name = locator.name;
-      return page.getByRole(locator.role as any, options);
-    }
-    if (locator.description) return page.getByText(locator.description);
-    throw new Error('No usable selector found for locator');
-  };
-
-  const buildTrackPayload = (
-    action: Action,
-    index: number,
-    stepExtras?: Record<string, unknown>
-  ): IntegrationTrackedResource | null => {
-    if (!('track' in action)) return null;
-    const rawTrack = (action as { track?: Record<string, unknown> }).track;
-    if (!rawTrack || typeof rawTrack !== 'object') return null;
-    const track = interpolateTrackMetadata(rawTrack, context.variables) as Record<string, unknown>;
-    if (typeof track.type !== 'string' || typeof track.id !== 'string') return null;
-
-    const { includeStepContext, ...rest } = track;
-    const payload: IntegrationTrackedResource = {
-      type: track.type,
-      id: track.id,
-      ...rest,
-    };
-    if (includeStepContext) {
-      payload.step = { index, ...action, ...stepExtras };
-    }
-    return payload;
-  };
 
   try {
     for (const [index, action] of test.steps.entries()) {
-      lastStepEndTs = Date.now();
+      const stepStartTs = Date.now();
       if (debugMode) {
         console.log(`  [DEBUG] Step ${index + 1}: ${action.type}`);
       }
 
       try {
-        switch (action.type) {
-          case 'navigate': {
-            const interpolated = interpolate(action.value);
-            const baseUrl = test.config?.web?.baseUrl || workflowBaseUrl;
-            const target = resolveUrl(interpolated, baseUrl);
-            if (debugMode) {
-              console.log(`  [DEBUG] Navigate step:`);
-              console.log(`  [DEBUG]   - action.value: ${action.value}`);
-              console.log(`  [DEBUG]   - interpolated: ${interpolated}`);
-              console.log(`  [DEBUG]   - test.config?.web?.baseUrl: ${test.config?.web?.baseUrl ?? '(undefined)'}`);
-              console.log(`  [DEBUG]   - workflowBaseUrl: ${workflowBaseUrl ?? '(undefined)'}`);
-              console.log(`  [DEBUG]   - effective baseUrl: ${baseUrl ?? '(undefined)'}`);
-              console.log(`  [DEBUG]   - target: ${target}`);
-            }
-            await page.goto(target);
-            break;
-          }
-          case 'tap': {
-            if (debugMode) console.log(`  [DEBUG] Tapping element:`, action.target);
-            const handle = resolveLocator(action.target);
-            await handle.click();
-            // Cascading wait: domcontentloaded first (reliable), then networkidle (handles SPAs)
-            await page.waitForLoadState('domcontentloaded').catch(() => {});
-            await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {
-              // Timeout is fine - proceed anyway since DOM is ready
-            });
-            break;
-          }
-          case 'input': {
-            const interpolated = interpolate(action.value);
-            if (debugMode) console.log(`  [DEBUG] Input: ${interpolated}`);
-            const handle = resolveLocator(action.target);
-            await handle.fill(interpolated);
-            break;
-          }
-          case 'clear': {
-            if (debugMode) console.log(`  [DEBUG] Clearing element:`, action.target);
-            const handle = resolveLocator(action.target);
-            await handle.clear();
-            break;
-          }
-          case 'hover': {
-            if (debugMode) console.log(`  [DEBUG] Hovering element:`, action.target);
-            const handle = resolveLocator(action.target);
-            await handle.hover();
-            break;
-          }
-          case 'select': {
-            const interpolated = interpolate(action.value);
-            if (debugMode) console.log(`  [DEBUG] Selecting: ${interpolated}`);
-            const handle = resolveLocator(action.target);
-            await handle.selectOption(interpolated);
-            break;
-          }
-          case 'check': {
-            if (debugMode) console.log(`  [DEBUG] Checking:`, action.target);
-            const handle = resolveLocator(action.target);
-            await handle.check();
-            break;
-          }
-          case 'uncheck': {
-            if (debugMode) console.log(`  [DEBUG] Unchecking:`, action.target);
-            const handle = resolveLocator(action.target);
-            await handle.uncheck();
-            break;
-          }
-          case 'press': {
-            if (debugMode) console.log(`  [DEBUG] Pressing key: ${action.key}`);
-            if (action.target) {
-              const handle = resolveLocator(action.target);
-              await handle.press(action.key);
-            } else {
-              await page.keyboard.press(action.key);
-            }
-            break;
-          }
-          case 'focus': {
-            if (debugMode) console.log(`  [DEBUG] Focusing:`, action.target);
-            const handle = resolveLocator(action.target);
-            await handle.focus();
-            break;
-          }
-          case 'assert': {
-            if (debugMode) console.log(`  [DEBUG] Assert:`, action.target);
-            const handle = resolveLocator(action.target);
-            await handle.waitFor({ state: 'visible' });
-            if (action.value) {
-              const interpolated = interpolate(action.value);
-              const text = (await handle.textContent())?.trim() ?? '';
-              if (!text.includes(interpolated)) {
-                throw new Error(
-                  `Assertion failed: expected "${interpolated}", got "${text}"`
-                );
-              }
-            }
-            break;
-          }
-          case 'wait': {
-            if (action.target) {
-              const handle = resolveLocator(action.target);
-              await handle.waitFor({ state: 'visible', timeout: action.timeout });
-            } else {
-              await page.waitForTimeout(action.timeout ?? 1000);
-            }
-            break;
-          }
-          case 'scroll': {
-            if (action.target) {
-              const handle = resolveLocator(action.target);
-              await handle.scrollIntoViewIfNeeded();
-            } else {
-              const amount = action.amount ?? 500;
-              const direction = action.direction ?? 'down';
-              const deltaY = direction === 'up' ? -amount : amount;
-              await page.evaluate((value) => window.scrollBy(0, value), deltaY);
-            }
-            break;
-          }
-          case 'screenshot': {
-            const ssAction = action as Extract<Action, { type: 'screenshot' }>;
-            // Cascading wait for page stability before screenshot
-            await page.waitForLoadState('domcontentloaded').catch(() => {});
-            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-            const waitBefore = ssAction.waitBefore ?? 500;
-            if (waitBefore > 0) {
-              await page.waitForTimeout(waitBefore);
-            }
-            const filename = ssAction.name ?? `step-${index + 1}.png`;
-            const filePath = path.join(screenshotDir, filename);
-            await page.screenshot({ path: filePath, fullPage: true });
-            results.push({ action, status: 'passed', screenshotPath: filePath });
-            const trackedPayload = buildTrackPayload(action, index, { screenshotPath: filePath });
-            if (trackedPayload) {
-              await trackResource(trackedPayload);
-            }
-            continue;
-          }
-          case 'saveStorageState': {
-            const saveAction = action as Extract<Action, { type: 'saveStorageState' }>;
-            if (saveAction.path) {
-              const resolvedPath = interpolate(saveAction.path);
-              const baseDir = path.dirname(testFilePath);
-              const absPath = path.isAbsolute(resolvedPath) ? resolvedPath : path.resolve(baseDir, resolvedPath);
-              await page.context().storageState({ path: absPath });
-              if (debugMode) {
-                console.log(`  [DEBUG] Saved storage state to ${absPath}`);
-              }
-            } else if (saveAction.handler) {
-              const resolvedHandler = interpolate(saveAction.handler);
-              const baseDir = path.dirname(testFilePath);
-              const absPath = path.isAbsolute(resolvedHandler) ? resolvedHandler : path.resolve(baseDir, resolvedHandler);
-              let loadPath = absPath;
-              if (absPath.endsWith('.ts')) {
-                const jsPath = absPath.replace(/\.ts$/, '.js');
-                try {
-                  await fs.access(jsPath);
-                  loadPath = jsPath;
-                } catch {
-                  // Fall through to .ts (requires tsx/ts-node in user's env)
-                }
-              }
-              const mod = await import(`${loadPath}?t=${Date.now()}`);
-              const fn = (mod.default ?? mod) as (ctx: {
-                page: typeof page;
-                context: ReturnType<typeof page.context>;
-                variables: Map<string, string>;
-              }) => Promise<void> | void;
-              if (typeof fn !== 'function') {
-                throw new Error(`saveStorageState handler at ${resolvedHandler} did not export a default function`);
-              }
-              await fn({
-                page,
-                context: page.context(),
-                variables: context.variables,
-              });
-              if (debugMode) {
-                console.log(`  [DEBUG] Ran custom saveStorageState handler: ${resolvedHandler}`);
-              }
-            } else {
-              throw new Error('saveStorageState requires either `path` or `handler` (schema should have caught this)');
-            }
-            results.push({ action, status: 'passed' });
-            const trackedPayload = buildTrackPayload(action, index);
-            if (trackedPayload) {
-              await trackResource(trackedPayload);
-            }
-            break;
-          }
-          case 'assertCookies': {
-            const cookieAction = action as Extract<Action, { type: 'assertCookies' }>;
-            const filterUrl = cookieAction.url ? interpolate(cookieAction.url) : undefined;
-            const jar = await page.context().cookies(filterUrl);
-            const names = new Set(jar.map((c) => c.name));
-            const problems: string[] = [];
-
-            if (cookieAction.has) {
-              for (const name of cookieAction.has) {
-                if (!names.has(name)) problems.push(`expected cookie "${name}" to be present`);
-              }
-            }
-            if (cookieAction.not) {
-              for (const name of cookieAction.not) {
-                if (names.has(name)) problems.push(`expected cookie "${name}" to be absent`);
-              }
-            }
-            if (cookieAction.match) {
-              for (const [name, pattern] of Object.entries(cookieAction.match)) {
-                const c = jar.find((entry) => entry.name === name);
-                if (!c) {
-                  problems.push(`expected cookie "${name}" to be present (for value match)`);
-                  continue;
-                }
-                const matcher = compileMatcher(interpolate(pattern), 'substr');
-                if (!matcher(c.value)) {
-                  problems.push(`cookie "${name}" value "${c.value}" did not match pattern "${pattern}"`);
-                }
-              }
-            }
-            if (problems.length > 0) {
-              throw new Error(`assertCookies failed:\n  - ${problems.join('\n  - ')}\n  (cookies seen: ${[...names].join(', ') || '<none>'})`);
-            }
-            results.push({ action, status: 'passed' });
-            break;
-          }
-
-          case 'expectResponse': {
-            const respAction = action as Extract<Action, { type: 'expectResponse' }>;
-            const urlPattern = interpolate(respAction.url);
-            const urlMatch = compileMatcher(urlPattern, 'url');
-            const headerMatchers = respAction.headers
-              ? Object.entries(respAction.headers).map(([name, pattern]) => ({
-                  name: name.toLowerCase(),
-                  test: compileMatcher(interpolate(pattern), 'substr'),
-                  pattern,
-                }))
-              : [];
-            const expectedStatus = respAction.status;
-
-            let sinceTs: number;
-            if (respAction.since === 'testStart') {
-              sinceTs = 0;
-            } else if (typeof respAction.since === 'number') {
-              sinceTs = respAction.since;
-            } else {
-              sinceTs = lastStepEndTs;
-            }
-
-            const timeout = respAction.timeout ?? 5000;
-            const deadline = Date.now() + timeout;
-
-            const findMatch = () => {
-              for (const entry of responseLog.snapshot()) {
-                if (entry.ts < sinceTs) continue;
-                if (!urlMatch(entry.url)) continue;
-                if (expectedStatus !== undefined && entry.status !== expectedStatus) continue;
-                let headersOk = true;
-                for (const h of headerMatchers) {
-                  const value = entry.headers[h.name];
-                  if (value === undefined || !h.test(value)) {
-                    headersOk = false;
-                    break;
-                  }
-                }
-                if (headersOk) return entry;
-              }
-              return null;
-            };
-
-            let match = findMatch();
-            while (!match && Date.now() < deadline) {
-              await new Promise((resolve) => setTimeout(resolve, 50));
-              match = findMatch();
-            }
-
-            if (!match) {
-              const recent = responseLog.snapshot().slice(-5).map((e) => `${e.status} ${e.url}`).join('\n  ');
-              throw new Error(
-                `expectResponse timed out after ${timeout}ms.\n` +
-                `  url pattern: ${urlPattern}\n` +
-                (expectedStatus !== undefined ? `  expected status: ${expectedStatus}\n` : '') +
-                (headerMatchers.length > 0 ? `  expected headers: ${headerMatchers.map((h) => `${h.name}=${h.pattern}`).join(', ')}\n` : '') +
-                `  recent responses:\n  ${recent || '<none>'}`
-              );
-            }
-
-            if (debugMode) {
-              console.log(`  [DEBUG] expectResponse matched: ${match.status} ${match.url}`);
-            }
-            results.push({ action, status: 'passed' });
-            break;
-          }
-          case 'setVar': {
-            let value: string;
-            if (action.value) {
-              value = interpolate(action.value);
-            } else if (action.from === 'response') {
-              throw new Error('setVar from response not yet implemented');
-            } else if (action.from === 'element') {
-              throw new Error('setVar from element not yet implemented');
-            } else if (action.from === 'email') {
-              throw new Error('Use email.extractCode or email.extractLink instead');
-            } else {
-              throw new Error('setVar requires value or from');
-            }
-            context.variables.set(action.name, value);
-            if (debugMode) console.log(`  [DEBUG] Set variable ${action.name} = ${value}`);
-            break;
-          }
-          case 'email.waitFor': {
-            if (!context.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            const mailbox = interpolate(action.mailbox);
-            context.lastEmail = await context.emailClient.waitForEmail(mailbox, {
-              timeout: action.timeout,
-              subjectContains: action.subjectContains,
-            });
-            break;
-          }
-          case 'email.extractCode': {
-            if (!context.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            if (!context.lastEmail) {
-              throw new Error('No email loaded - call email.waitFor first');
-            }
-            const code = context.emailClient.extractCode(
-              context.lastEmail,
-              action.pattern ? new RegExp(action.pattern) : undefined
-            );
-            if (!code) {
-              throw new Error('No code found in email');
-            }
-            context.variables.set(action.saveTo, code);
-            break;
-          }
-          case 'email.extractLink': {
-            if (!context.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            if (!context.lastEmail) {
-              throw new Error('No email loaded - call email.waitFor first');
-            }
-            const link = context.emailClient.extractLink(
-              context.lastEmail,
-              action.pattern ? new RegExp(action.pattern) : undefined
-            );
-            if (!link) {
-              throw new Error('No link found in email');
-            }
-            context.variables.set(action.saveTo, link);
-            break;
-          }
-          case 'email.clear': {
-            if (!context.emailClient) {
-              throw new Error('Email client not configured');
-            }
-            const mailbox = interpolate(action.mailbox);
-            await context.emailClient.clearMailbox(mailbox);
-            break;
-          }
-          case 'appwrite.verifyEmail': {
-            if (!context.appwriteContext.userId) {
-              throw new Error('No user tracked. appwrite.verifyEmail requires a user signup first.');
-            }
-            if (!context.appwriteConfig?.apiKey) {
-              throw new Error('appwrite.verifyEmail requires appwrite.apiKey in config');
-            }
-            const { Client, Users } = await import('node-appwrite');
-            const client = new Client()
-              .setEndpoint(context.appwriteConfig.endpoint)
-              .setProject(context.appwriteConfig.projectId)
-              .setKey(context.appwriteConfig.apiKey);
-            const users = new Users(client);
-            await users.updateEmailVerification(context.appwriteContext.userId, true);
-            if (debugMode) console.log(`  [DEBUG] Verified email for user ${context.appwriteContext.userId}`);
-            break;
-          }
-          case 'debug': {
-            console.log('  [DEBUG] Pausing execution - Playwright Inspector will open');
-            await page.pause();
-            break;
-          }
-          case 'waitForSelector': {
-            const handle = resolveLocator(action.target);
-            const timeout = action.timeout ?? 30000;
-
-            if (debugMode) {
-              console.log(`  [DEBUG] Waiting for element to be ${action.state}:`, action.target);
-            }
-
-            const waitForCondition = async (
-              checkFn: () => Promise<boolean>,
-              timeoutMs: number,
-              errorMessage: string,
-            ): Promise<void> => {
-              const start = Date.now();
-              while (Date.now() - start < timeoutMs) {
-                if (await checkFn()) return;
-                await new Promise((r) => setTimeout(r, 100));
-              }
-              throw new Error(errorMessage);
-            };
-
-            switch (action.state) {
-              case 'visible':
-              case 'hidden':
-              case 'attached':
-              case 'detached':
-                await handle.waitFor({ state: action.state, timeout });
-                break;
-              case 'enabled':
-                await waitForCondition(
-                  () => handle.isEnabled(),
-                  timeout,
-                  `Element did not become enabled within ${timeout}ms`,
-                );
-                break;
-              case 'disabled':
-                await waitForCondition(
-                  () => handle.isDisabled(),
-                  timeout,
-                  `Element did not become disabled within ${timeout}ms`,
-                );
-                break;
-            }
-            break;
-          }
-          case 'conditional': {
-            const handle = resolveLocator(action.condition.target);
-            let conditionMet = false;
-
-            if (debugMode) {
-              console.log(`  [DEBUG] Checking condition ${action.condition.type}:`, action.condition.target);
-            }
-
-            try {
-              switch (action.condition.type) {
-                case 'exists':
-                  await handle.waitFor({ state: 'attached', timeout: 500 });
-                  conditionMet = true;
-                  break;
-                case 'notExists':
-                  try {
-                    await handle.waitFor({ state: 'detached', timeout: 500 });
-                    conditionMet = true;
-                  } catch {
-                    conditionMet = false;
-                  }
-                  break;
-                case 'visible':
-                  conditionMet = await handle.isVisible();
-                  break;
-                case 'hidden':
-                  conditionMet = !(await handle.isVisible());
-                  break;
-              }
-            } catch {
-              conditionMet = action.condition.type === 'notExists';
-            }
-
-            if (debugMode) {
-              console.log(`  [DEBUG] Condition result: ${conditionMet}`);
-            }
-
-            // Execute nested steps - recursive call to handle nested actions
-            const stepsToRun = conditionMet ? action.then : (action.else ?? []);
-            for (const nestedAction of stepsToRun) {
-              // For nested actions, we need to execute them inline
-              // This is a simplified version - complex nesting would require refactoring
-              switch (nestedAction.type) {
-                case 'screenshot': {
-                  // Cascading wait for page stability
-                  await page.waitForLoadState('domcontentloaded').catch(() => {});
-                  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-                  const filename = nestedAction.name ?? `conditional-step.png`;
-                  const filePath = path.join(screenshotDir, filename);
-                  await page.screenshot({ path: filePath, fullPage: true });
-                  results.push({ action: nestedAction, status: 'passed', screenshotPath: filePath });
-                  const trackedPayload = buildTrackPayload(nestedAction, index, { screenshotPath: filePath });
-                  if (trackedPayload) {
-                    await trackResource(trackedPayload);
-                  }
-                  break;
-                }
-                case 'evaluate':
-                  throw new Error('Evaluate action in nested context (conditional/waitForBranch) is not yet supported');
-                case 'fail': {
-                  throw new Error(nestedAction.message);
-                }
-                default:
-                  throw new Error(`Nested action type ${nestedAction.type} in conditional not yet supported`);
-              }
-            }
-            break;
-          }
-          case 'evaluate': {
-            const evalAction = action as Extract<Action, { type: 'evaluate' }>;
-            // Wait for visual stability
-            await page.waitForLoadState('domcontentloaded').catch(() => {});
-            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-            const waitBefore = evalAction.waitBefore ?? 500;
-            if (waitBefore > 0) {
-              await page.waitForTimeout(waitBefore);
-            }
-
-            // Take screenshot
-            const evalScreenshotPath = path.join(screenshotDir, `evaluate-step-${index + 1}.png`);
-            const screenshotBuffer = await page.screenshot({
-              path: evalScreenshotPath,
-              fullPage: evalAction.fullPage ?? true,
-            });
-
-            // Interpolate expected values
-            const expectedRaw = evalAction.expected;
-            const expectedArray = Array.isArray(expectedRaw)
-              ? expectedRaw.map(e => interpolate(e))
-              : [interpolate(expectedRaw)];
-
-            // Run evaluation
-            const evalResult = await evaluate({
-              expected: expectedArray,
-              mode: evalAction.mode ?? 'auto',
-              regex: evalAction.regex ?? false,
-              prompt: evalAction.prompt,
-              confidence: evalAction.confidence ?? 60,
-              screenshotBuffer,
-              screenshotPath: evalScreenshotPath,
-              aiConfig: options.aiConfig,
-            });
-
-            if (debugMode) {
-              console.log(`  [DEBUG] Evaluate result: ${evalResult.passed ? 'PASSED' : 'FAILED'} (${evalResult.mode})`);
-              console.log(`  [DEBUG] Reason: ${evalResult.reason}`);
-            }
-
-            if (!evalResult.passed) {
-              throw new Error(`Evaluate failed (${evalResult.mode} mode): ${evalResult.reason}`);
-            }
-
-            results.push({
-              action,
-              status: 'passed',
-              screenshotPath: evalScreenshotPath,
-              logOutput: `Evaluate passed (${evalResult.mode}): ${evalResult.reason}`,
-            });
-            continue;
-          }
-          case 'fail': {
-            throw new Error(action.message);
-          }
-          case 'waitForBranch': {
-            const wfbAction = action as Extract<Action, { type: 'waitForBranch' }>;
-            const handle = resolveLocator(wfbAction.target);
-            const timeout = wfbAction.timeout ?? 30000;
-            const state = wfbAction.state ?? 'visible';
-            const pollInterval = wfbAction.pollInterval ?? 100;
-
-            if (debugMode) {
-              console.log(`  [DEBUG] waitForBranch: waiting for element to be ${state}:`, wfbAction.target);
-            }
-
-            // Poll for element state without throwing on timeout
-            const startTime = Date.now();
-            let elementAppeared = false;
-
-            while (Date.now() - startTime < timeout) {
-              try {
-                let conditionMet = false;
-                switch (state) {
-                  case 'visible':
-                    conditionMet = await handle.isVisible();
-                    break;
-                  case 'attached':
-                    conditionMet = (await handle.count()) > 0;
-                    break;
-                  case 'enabled':
-                    conditionMet = await handle.isEnabled().catch(() => false);
-                    break;
-                }
-                if (conditionMet) {
-                  elementAppeared = true;
-                  break;
-                }
-              } catch {
-                // Element not found yet, continue polling
-              }
-              await new Promise((r) => setTimeout(r, pollInterval));
-            }
-
-            if (debugMode) {
-              console.log(`  [DEBUG] waitForBranch: element ${elementAppeared ? 'appeared' : 'timed out'}`);
-            }
-
-            // Determine which branch to execute
-            const branch = elementAppeared ? wfbAction.onAppear : wfbAction.onTimeout;
-
-            if (branch) {
-              // Check if branch is inline actions (array) or workflow reference (object with workflow property)
-              if (Array.isArray(branch)) {
-                // Inline actions - execute recursively
-                for (const nestedAction of branch) {
-                  if (debugMode) {
-                    console.log(`  [DEBUG] waitForBranch: executing nested action ${nestedAction.type}`);
-                  }
-                  // Execute nested action inline (simplified - complex actions may need full handler)
-                  switch (nestedAction.type) {
-                    case 'navigate': {
-                      const interpolated = interpolate(nestedAction.value);
-                      const baseUrl = test.config?.web?.baseUrl || workflowBaseUrl;
-                      const target = resolveUrl(interpolated, baseUrl);
-                      await page.goto(target);
-                      break;
-                    }
-                    case 'tap': {
-                      const nestedHandle = resolveLocator(nestedAction.target);
-                      await nestedHandle.click();
-                      // Cascading wait for page stability after click
-                      await page.waitForLoadState('domcontentloaded').catch(() => {});
-                      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-                      break;
-                    }
-                    case 'input': {
-                      const interpolated = interpolate(nestedAction.value);
-                      const nestedHandle = resolveLocator(nestedAction.target);
-                      await nestedHandle.fill(interpolated);
-                      break;
-                    }
-                    case 'screenshot': {
-                      // Cascading wait for page stability
-                      await page.waitForLoadState('domcontentloaded').catch(() => {});
-                      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
-                      const nestedSsAction = nestedAction as Extract<Action, { type: 'screenshot' }>;
-                      const nestedWaitBefore = nestedSsAction.waitBefore ?? 500;
-                      if (nestedWaitBefore > 0) {
-                        await page.waitForTimeout(nestedWaitBefore);
-                      }
-                      const filename = nestedSsAction.name ?? `waitForBranch-step.png`;
-                      const filePath = path.join(screenshotDir, filename);
-                      await page.screenshot({ path: filePath, fullPage: true });
-                      results.push({ action: nestedAction, status: 'passed', screenshotPath: filePath });
-                      const trackedPayload = buildTrackPayload(nestedAction, index, { screenshotPath: filePath });
-                      if (trackedPayload) {
-                        await trackResource(trackedPayload);
-                      }
-                      break;
-                    }
-                    case 'wait': {
-                      if (nestedAction.target) {
-                        const nestedHandle = resolveLocator(nestedAction.target);
-                        await nestedHandle.waitFor({ state: 'visible', timeout: nestedAction.timeout });
-                      } else {
-                        await page.waitForTimeout(nestedAction.timeout ?? 1000);
-                      }
-                      break;
-                    }
-                    case 'evaluate':
-                      throw new Error('Evaluate action in nested context (conditional/waitForBranch) is not yet supported');
-                    case 'fail': {
-                      throw new Error(nestedAction.message);
-                    }
-                    case 'setVar': {
-                      let value: string;
-                      if (nestedAction.value) {
-                        value = interpolate(nestedAction.value);
-                      } else {
-                        throw new Error('setVar in waitForBranch requires value');
-                      }
-                      context.variables.set(nestedAction.name, value);
-                      if (debugMode) console.log(`  [DEBUG] Set variable ${nestedAction.name} = ${value}`);
-                      break;
-                    }
-                    case 'assert': {
-                      const nestedHandle = resolveLocator(nestedAction.target);
-                      await nestedHandle.waitFor({ state: 'visible' });
-                      if (nestedAction.value) {
-                        const interpolated = interpolate(nestedAction.value);
-                        const text = (await nestedHandle.textContent())?.trim() ?? '';
-                        if (!text.includes(interpolated)) {
-                          throw new Error(
-                            `Assertion failed: expected "${interpolated}", got "${text}"`
-                          );
-                        }
-                      }
-                      break;
-                    }
-                    default:
-                      throw new Error(`Nested action type ${nestedAction.type} in waitForBranch not yet supported`);
-                  }
-                  if (nestedAction.type !== 'screenshot') {
-                    const trackedPayload = buildTrackPayload(nestedAction, index);
-                    if (trackedPayload) {
-                      await trackResource(trackedPayload);
-                    }
-                  }
-
-                  results.push({ action: nestedAction, status: 'passed' });
-                }
-              } else if (typeof branch === 'object' && 'workflow' in branch) {
-                // Workflow reference - load and execute
-                const workflowPath = path.resolve(workflowDir, branch.workflow);
-                if (debugMode) {
-                  console.log(`  [DEBUG] waitForBranch: loading workflow from ${workflowPath}`);
-                }
-                const { loadWorkflowDefinition } = await import('../../core/loader.js');
-                const nestedWorkflow = await loadWorkflowDefinition(workflowPath);
-
-                // Inject variables if provided
-                if (branch.variables) {
-                  for (const [key, value] of Object.entries(branch.variables)) {
-                    const interpolated = interpolate(value);
-                    context.variables.set(key, interpolated);
-                  }
-                }
-
-                // Run nested workflow tests
-                for (const testRef of nestedWorkflow.tests) {
-                  const testFilePath = path.resolve(path.dirname(workflowPath), testRef.file);
-                  const nestedTest = await loadTestDefinition(testFilePath);
-
-                  // Initialize test variables
-                  if (nestedTest.variables) {
-                    for (const [key, value] of Object.entries(nestedTest.variables)) {
-                      const interpolated = interpolateVariables(value, context.variables);
-                      context.variables.set(key, interpolated);
-                    }
-                  }
-
-                  const nestedResult = await runTestInWorkflow(
-                    nestedTest,
-                    page,
-                    context,
-                    options,
-                    path.dirname(workflowPath),
-                    testFilePath,
-                    nestedWorkflow.config?.web?.baseUrl ?? workflowBaseUrl
-                  );
-
-                  results.push(...nestedResult.steps);
-
-                  if (nestedResult.status === 'failed') {
-                    throw new Error(`Nested workflow test failed in waitForBranch`);
-                  }
-                }
-              }
-            } else if (!elementAppeared && debugMode) {
-              console.log(`  [DEBUG] waitForBranch: timeout occurred but no onTimeout branch defined, continuing silently`);
-            }
-            break;
-          }
-          default:
-            throw new Error(`Unsupported action type: ${(action as Action).type}`);
-        }
-
-        const trackedPayload = buildTrackPayload(action, index);
-        if (trackedPayload) {
-          await trackResource(trackedPayload);
-        }
-
-        results.push({ action, status: 'passed' });
+        const actionExtras = await executeActionWithRetry(page, action, index, {
+          baseUrl,
+          context,
+          screenshotDir,
+          debugMode,
+          interactive: false,
+          aiConfig: options.aiConfig,
+          browserName,
+          testFilePath,
+          responseLog,
+          stepStartTs,
+        });
+        results.push({ action, status: 'passed', logOutput: actionExtras.logOutput });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         results.push({ action, status: 'failed', error: message });
@@ -1261,14 +445,18 @@ export async function runWorkflowWithContext(
   console.log(`Session ID: ${sessionId}\n`);
 
   // Set up Appwrite network tracking if configured
-  if (workflow.config?.appwrite) {
-    // Update executionContext with appwrite config if not already set
-    if (!executionContext.appwriteConfig) {
-      executionContext.appwriteConfig = {
+  // Workflow config wins; otherwise fall back to options.appwriteConfig (e.g. from pipeline).
+  const effectiveAppwriteConfig = workflow.config?.appwrite
+    ? {
         endpoint: workflow.config.appwrite.endpoint,
         projectId: workflow.config.appwrite.projectId,
         apiKey: workflow.config.appwrite.apiKey,
-      };
+      }
+    : options.appwriteConfig;
+  if (effectiveAppwriteConfig) {
+    // Update executionContext with appwrite config if not already set
+    if (!executionContext.appwriteConfig) {
+      executionContext.appwriteConfig = effectiveAppwriteConfig;
     }
     setupAppwriteTracking(page, executionContext);
   }
@@ -1537,15 +725,23 @@ export async function runWorkflow(
       process.env.INTELLITESTER_SESSION_ID = sessionId;
       process.env.INTELLITESTER_TRACK_URL = `http://localhost:${trackingServer.port}`;
     }
+    // Workflow config wins; otherwise fall back to options.appwriteConfig (e.g. from pipeline).
+    const trackingAppwrite = workflow.config?.appwrite
+      ? {
+          endpoint: workflow.config.appwrite.endpoint,
+          projectId: workflow.config.appwrite.projectId,
+          apiKey: workflow.config.appwrite.apiKey,
+        }
+      : options.appwriteConfig;
     fileTracking = await initFileTracking({
       sessionId,
       cleanupConfig,
       trackDir: options.trackDir,
-      providerConfig: workflow.config?.appwrite ? {
+      providerConfig: trackingAppwrite ? {
         provider: 'appwrite',
-        endpoint: workflow.config.appwrite.endpoint,
-        projectId: workflow.config.appwrite.projectId,
-        apiKey: workflow.config.appwrite.apiKey,
+        endpoint: trackingAppwrite.endpoint,
+        projectId: trackingAppwrite.projectId,
+        apiKey: trackingAppwrite.apiKey,
       } : undefined,
     });
     process.env.INTELLITESTER_TRACK_FILE = fileTracking.trackFile;
@@ -1605,16 +801,21 @@ export async function runWorkflow(
   process.on('SIGTERM', signalCleanup);
 
   // 4. Launch browser ONCE for entire workflow
-  const browserName = options.browser ?? workflow.config?.web?.browser ?? 'chromium';
+  // Workflow config wins; otherwise fall back to options.browser (e.g. from pipeline/CLI).
+  const browserName = workflow.config?.web?.browser ?? options.browser ?? 'chromium';
   const headless = options.headed === true ? false : (workflow.config?.web?.headless ?? true);
   console.log(`Launching ${browserName}${headless ? ' (headless)' : ' (visible)'}...`);
   const browser = await getBrowser(browserName).launch(getBrowserLaunchOptions({ headless, browser: browserName }));
   console.log(`Browser launched successfully`);
 
   // Determine viewport sizes to test
-  const testSizes = options.testSizes && options.testSizes.length > 0
-    ? options.testSizes
-    : ['1920x1080']; // Default to standard desktop size
+  // Workflow config wins; otherwise fall back to options.testSizes (e.g. from pipeline/CLI).
+  const workflowTestSizes = workflow.config?.web?.testSizes;
+  const testSizes = (workflowTestSizes && workflowTestSizes.length > 0)
+    ? workflowTestSizes
+    : (options.testSizes && options.testSizes.length > 0
+      ? options.testSizes
+      : ['1920x1080']); // Default to standard desktop size
 
   // Validate all viewport sizes upfront
   const viewportSizes: Array<{ size: string; viewport: { width: number; height: number } }> = [];
@@ -1634,15 +835,18 @@ export async function runWorkflow(
   let _lastCleanupResult: { success: boolean; deleted: string[]; failed: string[] } | undefined;
 
   // Create browser context (will be replaced for each size)
-  // CLI flag (string only) resolves against cwd; YAML config resolves against the workflow file dir.
-  const cliStorageState = typeof options.storageState === 'string'
-    ? (path.isAbsolute(options.storageState) ? options.storageState : path.resolve(process.cwd(), options.storageState))
-    : options.storageState;
+  // Workflow config wins (resolved against workflow file dir); otherwise fall back to
+  // options.storageState (CLI string resolves against cwd; inline object passes through).
+  const optionsStorageState: BrowserContextOptions['storageState'] | undefined =
+    typeof options.storageState === 'string'
+      ? (path.isAbsolute(options.storageState) ? options.storageState : path.resolve(process.cwd(), options.storageState))
+      : options.storageState;
+  const workflowStorageState = resolveStorageStatePath(
+    workflow.config?.web?.storageState as BrowserContextOptions['storageState'],
+    workflowDir,
+  );
   const storageState: BrowserContextOptions['storageState'] | undefined =
-    cliStorageState ?? resolveStorageStatePath(
-      workflow.config?.web?.storageState as BrowserContextOptions['storageState'],
-      workflowDir,
-    );
+    workflowStorageState ?? optionsStorageState;
   let browserContext = await browser.newContext({
     viewport: viewportSizes[0].viewport,
     ...(storageState ? { storageState } : {}),
@@ -1651,6 +855,7 @@ export async function runWorkflow(
   page.setDefaultTimeout(30000);
 
   // 5. Create shared execution context
+  // Workflow config wins; otherwise fall back to options.appwriteConfig (e.g. from pipeline).
   const executionContext: ExecutionContext = {
     variables: new Map<string, string>(),
     lastEmail: null,
@@ -1662,7 +867,7 @@ export async function runWorkflow(
           projectId: workflow.config.appwrite.projectId,
           apiKey: workflow.config.appwrite.apiKey,
         }
-      : undefined,
+      : options.appwriteConfig,
   };
 
   // 5b. Load workflow-level variables into execution context

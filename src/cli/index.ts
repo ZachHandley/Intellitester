@@ -688,6 +688,35 @@ or inline synthetic files (\`name\` + \`content\` or \`base64\`).
       content: "synthetic test note"
 \`\`\`
 
+#### \`saveStorageState\`
+Capture the current browser \`page.context().storageState()\` (cookies + origin-scoped localStorage / sessionStorage) to disk so a later test can re-use it via the top-level \`storageState:\` field. Useful for "log in once, run many tests" flows.
+
+Two modes:
+- \`path:\` — write the storage state JSON to this location. Accepts a path relative to the test YAML, an absolute path, or a \`\${VAR}\` interpolation. Parent directories are created automatically.
+- \`handler:\` — point at a custom \`.ts\`/\`.js\` module exporting a default function that receives \`{ page, context, variables }\`. The handler is responsible for persisting (e.g. uploading the state to a vault, encrypting it, splitting per-origin, etc.).
+
+\`\`\`yaml
+# Log in, then snapshot the authenticated session for downstream tests
+- type: input
+  target: { testId: email }
+  value: \${EMAIL}
+- type: input
+  target: { testId: password }
+  value: \${PASSWORD}
+- type: tap
+  target: { text: Sign In }
+- type: wait
+  target: { testId: dashboard }
+- type: saveStorageState
+  path: ./.auth/user.json
+\`\`\`
+
+Downstream tests can then opt into the saved state at the top of their YAML:
+
+\`\`\`yaml
+storageState: ./.auth/user.json
+\`\`\`
+
 #### \`hover\`
 Hover over an element (useful for dropdowns, tooltips).
 
@@ -768,6 +797,27 @@ Assert that an element exists or contains expected text. Uses DOM selectors.
 # Assert specific text is visible
 - type: assert
   target: { text: "Login successful" }
+\`\`\`
+
+#### \`assertCookies\`
+Inspect \`page.context().cookies(url?)\` and assert presence / absence / value patterns of cookies in the active browser context. Useful for verifying that a login set the session cookie, that logout cleared it, or that a third-party SDK did not drop unexpected cookies.
+
+Supports any combination of:
+- \`has:\` — list of cookie names that MUST be present.
+- \`not:\` — list of cookie names that must be ABSENT.
+- \`match:\` — map of \`cookieName: pattern\`; each cookie's value must contain the given substring. Patterns support \`\${VAR}\` interpolation.
+- \`url:\` — optional URL whose origin scopes which cookies are read (defaults to all cookies in the context).
+
+\`\`\`yaml
+# After signing in, verify the session cookie exists and looks signed
+- type: assertCookies
+  url: http://localhost:3000
+  has:
+    - session
+  not:
+    - guest_id
+  match:
+    session: "v2."
 \`\`\`
 
 #### \`evaluate\`
@@ -860,6 +910,26 @@ Wait for an element to reach a specific state.
   state: hidden
 
 # States: visible, hidden, attached, detached, enabled, disabled
+\`\`\`
+
+#### \`expectResponse\`
+Watch the network response log (a bounded ring buffer captured for the page) and wait up to \`timeout\` ms for a response matching the given criteria. Unlike \`wait\`, this matches against responses that may have already arrived since the step started — perfect for asserting that a button click triggered the right backend call.
+
+Matching fields:
+- \`url:\` — substring match, regex (\`/.../\` form), or wildcard pattern (\`*\`) against the response URL. Required.
+- \`status:\` — optional numeric status code; must match exactly.
+- \`headers:\` — optional map of \`headerName: pattern\`; each named response header must contain the substring.
+- \`since:\` — when to start scanning the response log. \`testStart\` scans from the beginning of the test; a step index / timestamp scans from there; the default is the moment this step began executing.
+- \`timeout:\` — max ms to wait for a match (default \`5000\`).
+
+\`\`\`yaml
+# Click "Create user" and assert the backend returned 201
+- type: tap
+  target: { testId: create-user-submit }
+- type: expectResponse
+  url: "POST /api/users"
+  status: 201
+  timeout: 5000
 \`\`\`
 
 ### Variable Actions
@@ -1484,6 +1554,63 @@ config:
     retries: 3
 \`\`\`
 
+### Multi-process webServer
+
+\`webServer\` accepts either a single object (one process) or an array of entries (multiple processes). When you provide an array, IntelliTester starts each entry sequentially in the order given, waits for each entry's \`url\` to respond before spawning the next, and tears them down in reverse order on exit.
+
+Per-entry fields:
+- \`command\` — shell command to spawn (required).
+- \`url\` — health/readiness URL polled before the entry is considered ready.
+- \`cwd\` (alias: \`workdir\`) — working directory the command runs in. Relative to the config file.
+- \`env\` — map of extra environment variables for that process.
+- \`timeout\` — ms to wait for \`url\` to respond before failing startup.
+- \`reuseExisting\` (alias: \`reuseExistingServer\`) — if \`true\` and \`url\` is already responding, skip spawning.
+
+The LAST entry's \`url\` is the primary test target and is used as the fallback for \`web.baseUrl\` when one is not explicitly set.
+
+\`\`\`yaml
+# Split-stack project: API on :3001, frontend on :5173
+config:
+  web:
+    baseUrl: http://localhost:5173
+  webServer:
+    - name: api
+      command: pnpm dev:api
+      url: http://localhost:3001/health
+      cwd: ./api
+      timeout: 30000
+      env:
+        NODE_ENV: test
+    - name: frontend
+      command: pnpm dev:web
+      url: http://localhost:5173
+      cwd: ./web
+      timeout: 30000
+      reuseExisting: true
+\`\`\`
+
+### Config inheritance (pipeline -> workflow -> test)
+
+IntelliTester merges configuration top-down. A pipeline's \`config\` flows into every child workflow that does not explicitly override the same field; a workflow's \`config\` flows into every test it runs that does not explicitly override the same field. When a workflow or pipeline is run on its own, its missing fields are filled from the global \`intellitester.config.yaml\` at the project root.
+
+Fields that participate in inheritance include:
+- \`web.baseUrl\` — base URL for relative \`navigate\` paths.
+- \`web.browser\` — browser engine / headless flag.
+- \`web.storageState\` — default storage state file for new contexts.
+- \`webServer\` — single or array form; started once at the outermost runner.
+- \`appwrite\` — endpoint, project, API key, cleanup settings.
+
+Precedence (closest to the test wins):
+
+| Source | Priority |
+|--------|----------|
+| Test YAML (\`*.test.yaml\`) | highest |
+| Workflow YAML (\`*.workflow.yaml\`) | overrides pipeline + global |
+| Pipeline YAML (\`*.pipeline.yaml\`) | overrides global |
+| Global \`intellitester.config.yaml\` | lowest |
+
+So a test that sets its own \`storageState\` keeps it; a test that does not falls back to the workflow's value, then the pipeline's, then the global config.
+
 ---
 
 ## Viewport Sizes (Responsive Testing)
@@ -1959,8 +2086,30 @@ const validateCommand = async (target: string): Promise<void> => {
   }
 
   for (const file of files) {
+    const rel = path.relative(process.cwd(), file);
+    if (isPipelineFile(file)) {
+      await loadPipelineDefinition(file);
+      console.log(`✓ ${rel} valid (pipeline)`);
+      continue;
+    }
+    if (isWorkflowFile(file)) {
+      await loadWorkflowDefinition(file);
+      console.log(`✓ ${rel} valid (workflow)`);
+      continue;
+    }
+    const fileContent = await fs.readFile(file, 'utf8');
+    if (isPipelineContent(fileContent)) {
+      await loadPipelineDefinition(file);
+      console.log(`✓ ${rel} valid (pipeline)`);
+      continue;
+    }
+    if (isWorkflowContent(fileContent)) {
+      await loadWorkflowDefinition(file);
+      console.log(`✓ ${rel} valid (workflow)`);
+      continue;
+    }
     await loadTestDefinition(file);
-    console.log(`✓ ${path.relative(process.cwd(), file)} valid`);
+    console.log(`✓ ${rel} valid (test)`);
   }
 };
 
@@ -2207,14 +2356,24 @@ const runWorkflowCommand = async (file: string, options: CLIRunOptions): Promise
   // Now load and validate with schemas
   const workflow = await loadWorkflowDefinition(workflowPath);
 
-  // Load config to get AI settings (for interactive mode)
+  // Load config to get AI settings (for interactive mode) and to supply
+  // fallback values for fields the workflow file may omit.
   const hasConfigFile = await fileExists(CONFIG_FILENAME);
   const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
+  const appwriteFromConfig = config?.appwrite
+    ? {
+        endpoint: config.appwrite.endpoint,
+        projectId: config.appwrite.projectId,
+        apiKey: config.appwrite.apiKey,
+      }
+    : undefined;
 
   const result = await runWorkflow(workflow, workflowPath, {
     ...mapCLIToExecutorOptions(options),
     aiConfig: config?.ai,
     webServer: config?.webServer,
+    baseUrl: config?.platforms?.web?.baseUrl,
+    appwriteConfig: appwriteFromConfig,
   });
 
   // Print results
@@ -2269,7 +2428,24 @@ const runPipelineCommand = async (file: string, options: CLIRunOptions): Promise
   // Now load and validate with schemas
   const pipeline = await loadPipelineDefinition(pipelinePath);
 
-  const result = await runPipeline(pipeline, pipelinePath, mapCLIToExecutorOptions(options));
+  // Load global config to supply fallbacks the pipeline file may omit.
+  const hasConfigFile = await fileExists(CONFIG_FILENAME);
+  const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
+  const appwriteFromConfig = config?.appwrite
+    ? {
+        endpoint: config.appwrite.endpoint,
+        projectId: config.appwrite.projectId,
+        apiKey: config.appwrite.apiKey,
+      }
+    : undefined;
+
+  const result = await runPipeline(pipeline, pipelinePath, {
+    ...mapCLIToExecutorOptions(options),
+    aiConfig: config?.ai,
+    webServer: config?.webServer,
+    baseUrl: config?.platforms?.web?.baseUrl,
+    appwriteConfig: appwriteFromConfig,
+  });
 
   // Print results
   console.log(`\nPipeline: ${pipeline.name}`);

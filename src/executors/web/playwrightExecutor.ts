@@ -516,31 +516,37 @@ async function handleInteractiveError(
   return response.action || 'abort';
 }
 
-interface ActionExtras {
+export interface ActionExtras {
   logOutput?: string;
 }
 
-async function executeActionWithRetry(
+export interface ExecuteActionOptions {
+  baseUrl?: string;
+  context: ExecutionContext;
+  screenshotDir: string;
+  debugMode: boolean;
+  interactive: boolean;
+  aiConfig?: import('../../ai/types').AIConfig;
+  browserName?: BrowserName;
+  healing?: {
+    enabled: boolean;
+    maxAttempts?: number;
+  };
+  /** Absolute path to the running test YAML, used to resolve relative file paths for upload/saveStorageState. */
+  testFilePath?: string;
+  /** Network response log attached to the page; required for `expectResponse`. */
+  responseLog?: ResponseLog;
+  /** Timestamp of the start of this step (used as the default `since` for `expectResponse`). */
+  stepStartTs?: number;
+}
+
+export async function executeActionWithRetry(
   page: Page,
   action: Action,
   index: number,
-  options: {
-    baseUrl?: string;
-    context: ExecutionContext;
-    screenshotDir: string;
-    debugMode: boolean;
-    interactive: boolean;
-    aiConfig?: import('../../ai/types').AIConfig;
-    browserName?: BrowserName;
-    healing?: {
-      enabled: boolean;
-      maxAttempts?: number;
-    };
-    /** Absolute path to the running test YAML, used to resolve relative file paths for upload/saveStorageState. */
-    testFilePath?: string;
-  },
+  options: ExecuteActionOptions,
 ): Promise<ActionExtras> {
-  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing, testFilePath } = options;
+  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing, testFilePath, responseLog, stepStartTs } = options;
   const extras: ActionExtras = {};
 
   const buildTrackPayload = (stepExtras?: Record<string, unknown>): IntegrationTrackedResource | null => {
@@ -1015,15 +1021,7 @@ async function executeActionWithRetry(
             if (debugMode) {
               console.log(`[DEBUG] Executing nested step ${nestedIdx + 1}: ${nestedAction.type}`);
             }
-            await executeActionWithRetry(page, nestedAction, index, {
-              baseUrl,
-              context,
-              screenshotDir,
-              debugMode,
-              interactive,
-              aiConfig,
-              browserName,
-            });
+            await executeActionWithRetry(page, nestedAction, index, options);
           }
           break;
         }
@@ -1147,15 +1145,7 @@ async function executeActionWithRetry(
               if (debugMode) {
                 console.log(`[DEBUG] Executing branch step ${nestedIdx + 1}: ${nestedAction.type}`);
               }
-              await executeActionWithRetry(page, nestedAction, index, {
-                baseUrl,
-                context,
-                screenshotDir,
-                debugMode,
-                interactive,
-                aiConfig,
-                browserName,
-              });
+              await executeActionWithRetry(page, nestedAction, index, options);
             }
           } else {
             // Workflow file reference - load and execute workflow
@@ -1199,17 +1189,160 @@ async function executeActionWithRetry(
 
               // Execute each step in the test
               for (const [testStepIdx, testAction] of test.steps.entries()) {
-                await executeActionWithRetry(page, testAction, testStepIdx, {
-                  baseUrl,
-                  context,
-                  screenshotDir,
-                  debugMode,
-                  interactive,
-                  aiConfig,
-                  browserName,
-                });
+                await executeActionWithRetry(page, testAction, testStepIdx, options);
               }
             }
+          }
+          break;
+        }
+        case 'saveStorageState': {
+          const saveAction = action as Extract<Action, { type: 'saveStorageState' }>;
+          if (saveAction.path) {
+            const resolvedPath = interpolateVariables(saveAction.path, context.variables);
+            const baseDir = testFilePath ? path.dirname(testFilePath) : process.cwd();
+            const absPath = path.isAbsolute(resolvedPath) ? resolvedPath : path.resolve(baseDir, resolvedPath);
+            await page.context().storageState({ path: absPath });
+            if (debugMode) {
+              console.log(`[DEBUG] Saved storage state to ${absPath}`);
+            }
+          } else if (saveAction.handler) {
+            const resolvedHandler = interpolateVariables(saveAction.handler, context.variables);
+            const baseDir = testFilePath ? path.dirname(testFilePath) : process.cwd();
+            const absPath = path.isAbsolute(resolvedHandler) ? resolvedHandler : path.resolve(baseDir, resolvedHandler);
+            let loadPath = absPath;
+            if (absPath.endsWith('.ts')) {
+              const jsPath = absPath.replace(/\.ts$/, '.js');
+              try {
+                await fs.access(jsPath);
+                loadPath = jsPath;
+              } catch {
+                // Fall through to direct .ts import (requires tsx/ts-node in user's env)
+              }
+            }
+            const mod = await import(`${loadPath}?t=${Date.now()}`);
+            const fn = (mod.default ?? mod) as (ctx: {
+              page: typeof page;
+              context: ReturnType<typeof page.context>;
+              variables: Map<string, string>;
+            }) => Promise<void> | void;
+            if (typeof fn !== 'function') {
+              throw new Error(`saveStorageState handler at ${resolvedHandler} did not export a default function`);
+            }
+            await fn({
+              page,
+              context: page.context(),
+              variables: context.variables,
+            });
+            if (debugMode) {
+              console.log(`[DEBUG] Ran custom saveStorageState handler: ${resolvedHandler}`);
+            }
+          } else {
+            throw new Error('saveStorageState requires either `path` or `handler` (schema should have caught this)');
+          }
+          break;
+        }
+        case 'assertCookies': {
+          const cookieAction = action as Extract<Action, { type: 'assertCookies' }>;
+          const filterUrl = cookieAction.url
+            ? interpolateVariables(cookieAction.url, context.variables)
+            : undefined;
+          const jar = await page.context().cookies(filterUrl);
+          const names = new Set(jar.map((c) => c.name));
+          const problems: string[] = [];
+
+          if (cookieAction.has) {
+            for (const name of cookieAction.has) {
+              if (!names.has(name)) problems.push(`expected cookie "${name}" to be present`);
+            }
+          }
+          if (cookieAction.not) {
+            for (const name of cookieAction.not) {
+              if (names.has(name)) problems.push(`expected cookie "${name}" to be absent`);
+            }
+          }
+          if (cookieAction.match) {
+            for (const [name, pattern] of Object.entries(cookieAction.match)) {
+              const c = jar.find((entry) => entry.name === name);
+              if (!c) {
+                problems.push(`expected cookie "${name}" to be present (for value match)`);
+                continue;
+              }
+              const matcher = compileMatcher(interpolateVariables(pattern, context.variables), 'substr');
+              if (!matcher(c.value)) {
+                problems.push(`cookie "${name}" value "${c.value}" did not match pattern "${pattern}"`);
+              }
+            }
+          }
+          if (problems.length > 0) {
+            throw new Error(`assertCookies failed:\n  - ${problems.join('\n  - ')}\n  (cookies seen: ${[...names].join(', ') || '<none>'})`);
+          }
+          break;
+        }
+        case 'expectResponse': {
+          if (!responseLog) {
+            throw new Error('expectResponse requires a responseLog to be attached (executor wiring issue)');
+          }
+          const respAction = action as Extract<Action, { type: 'expectResponse' }>;
+          const urlPattern = interpolateVariables(respAction.url, context.variables);
+          const urlMatch = compileMatcher(urlPattern, 'url');
+          const headerMatchers = respAction.headers
+            ? Object.entries(respAction.headers).map(([name, pattern]) => ({
+                name: name.toLowerCase(),
+                test: compileMatcher(interpolateVariables(pattern, context.variables), 'substr'),
+                pattern,
+              }))
+            : [];
+          const expectedStatus = respAction.status;
+
+          let sinceTs: number;
+          if (respAction.since === 'testStart') {
+            sinceTs = 0;
+          } else if (typeof respAction.since === 'number') {
+            sinceTs = respAction.since;
+          } else {
+            sinceTs = stepStartTs ?? 0;
+          }
+
+          const timeout = respAction.timeout ?? 5000;
+          const deadline = Date.now() + timeout;
+
+          const findMatch = () => {
+            for (const entry of responseLog.snapshot()) {
+              if (entry.ts < sinceTs) continue;
+              if (!urlMatch(entry.url)) continue;
+              if (expectedStatus !== undefined && entry.status !== expectedStatus) continue;
+              let headersOk = true;
+              for (const h of headerMatchers) {
+                const value = entry.headers[h.name];
+                if (value === undefined || !h.test(value)) {
+                  headersOk = false;
+                  break;
+                }
+              }
+              if (headersOk) return entry;
+            }
+            return null;
+          };
+
+          let match = findMatch();
+          while (!match && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            match = findMatch();
+          }
+
+          if (!match) {
+            const recent = responseLog.snapshot().slice(-5).map((e) => `${e.status} ${e.url}`).join('\n  ');
+            throw new Error(
+              `expectResponse timed out after ${timeout}ms.\n` +
+              `  url pattern: ${urlPattern}\n` +
+              (expectedStatus !== undefined ? `  expected status: ${expectedStatus}\n` : '') +
+              (headerMatchers.length > 0 ? `  expected headers: ${headerMatchers.map((h) => `${h.name}=${h.pattern}`).join(', ')}\n` : '') +
+              `  recent responses:\n  ${recent || '<none>'}`
+            );
+          }
+
+          if (debugMode) {
+            console.log(`[DEBUG] expectResponse matched: ${match.status} ${match.url}`);
           }
           break;
         }
@@ -1831,202 +1964,7 @@ export const runWebTest = async (
             continue;
           }
 
-          if (action.type === 'saveStorageState') {
-            const saveAction = action as Extract<Action, { type: 'saveStorageState' }>;
-            try {
-              if (saveAction.path) {
-                const resolvedPath = interpolateVariables(saveAction.path, executionContext.variables);
-                const baseDir = options.testFilePath ? path.dirname(options.testFilePath) : process.cwd();
-                const absPath = path.isAbsolute(resolvedPath) ? resolvedPath : path.resolve(baseDir, resolvedPath);
-                await page.context().storageState({ path: absPath });
-                if (debugMode) {
-                  console.log(`[DEBUG] Saved storage state to ${absPath}`);
-                }
-              } else if (saveAction.handler) {
-                const resolvedHandler = interpolateVariables(saveAction.handler, executionContext.variables);
-                const baseDir = options.testFilePath ? path.dirname(options.testFilePath) : process.cwd();
-                const absPath = path.isAbsolute(resolvedHandler) ? resolvedHandler : path.resolve(baseDir, resolvedHandler);
-                // Match cleanup loader pattern: prefer .js sibling if a .ts path is given and the .js exists
-                let loadPath = absPath;
-                if (absPath.endsWith('.ts')) {
-                  const jsPath = absPath.replace(/\.ts$/, '.js');
-                  try {
-                    await fs.access(jsPath);
-                    loadPath = jsPath;
-                  } catch {
-                    // Fall through to direct .ts import (requires tsx/ts-node in user's env)
-                  }
-                }
-                const mod = await import(`${loadPath}?t=${Date.now()}`);
-                const fn = (mod.default ?? mod) as (ctx: {
-                  page: typeof page;
-                  context: ReturnType<typeof page.context>;
-                  variables: Map<string, string>;
-                }) => Promise<void> | void;
-                if (typeof fn !== 'function') {
-                  throw new Error(`saveStorageState handler at ${resolvedHandler} did not export a default function`);
-                }
-                await fn({
-                  page,
-                  context: page.context(),
-                  variables: executionContext.variables,
-                });
-                if (debugMode) {
-                  console.log(`[DEBUG] Ran custom saveStorageState handler: ${resolvedHandler}`);
-                }
-              } else {
-                throw new Error('saveStorageState requires either `path` or `handler` (schema should have caught this)');
-              }
-              sizeResults.push({ action, status: 'passed' });
-              safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-              const trackedPayload = buildTrackPayload(action, index);
-              if (trackedPayload) {
-                await trackResource(trackedPayload);
-              }
-            } catch (e) {
-              const errMsg = e instanceof Error ? e.message : String(e);
-              sizeResults.push({ action, status: 'failed', error: errMsg });
-              safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-              throw e;
-            }
-            continue;
-          }
-
-          if (action.type === 'assertCookies') {
-            const cookieAction = action as Extract<Action, { type: 'assertCookies' }>;
-            try {
-              const filterUrl = cookieAction.url
-                ? interpolateVariables(cookieAction.url, executionContext.variables)
-                : undefined;
-              const jar = await page.context().cookies(filterUrl);
-              const names = new Set(jar.map((c) => c.name));
-              const problems: string[] = [];
-
-              if (cookieAction.has) {
-                for (const name of cookieAction.has) {
-                  if (!names.has(name)) problems.push(`expected cookie "${name}" to be present`);
-                }
-              }
-              if (cookieAction.not) {
-                for (const name of cookieAction.not) {
-                  if (names.has(name)) problems.push(`expected cookie "${name}" to be absent`);
-                }
-              }
-              if (cookieAction.match) {
-                for (const [name, pattern] of Object.entries(cookieAction.match)) {
-                  const c = jar.find((entry) => entry.name === name);
-                  if (!c) {
-                    problems.push(`expected cookie "${name}" to be present (for value match)`);
-                    continue;
-                  }
-                  const matcher = compileMatcher(interpolateVariables(pattern, executionContext.variables), 'substr');
-                  if (!matcher(c.value)) {
-                    problems.push(`cookie "${name}" value "${c.value}" did not match pattern "${pattern}"`);
-                  }
-                }
-              }
-              if (problems.length > 0) {
-                throw new Error(`assertCookies failed:\n  - ${problems.join('\n  - ')}\n  (cookies seen: ${[...names].join(', ') || '<none>'})`);
-              }
-              sizeResults.push({ action, status: 'passed' });
-              safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-            } catch (e) {
-              const errMsg = e instanceof Error ? e.message : String(e);
-              sizeResults.push({ action, status: 'failed', error: errMsg });
-              safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-              throw e;
-            }
-            continue;
-          }
-
-          if (action.type === 'expectResponse') {
-            const respAction = action as Extract<Action, { type: 'expectResponse' }>;
-            try {
-              const urlPattern = interpolateVariables(respAction.url, executionContext.variables);
-              const urlMatch = compileMatcher(urlPattern, 'url');
-              const headerMatchers = respAction.headers
-                ? Object.entries(respAction.headers).map(([name, pattern]) => ({
-                    name: name.toLowerCase(),
-                    test: compileMatcher(interpolateVariables(pattern, executionContext.variables), 'substr'),
-                    pattern,
-                  }))
-                : [];
-              const expectedStatus = respAction.status;
-
-              let sinceTs: number;
-              if (respAction.since === 'testStart') {
-                sinceTs = 0;
-              } else if (typeof respAction.since === 'number') {
-                sinceTs = respAction.since;
-              } else {
-                sinceTs = lastStepEndTs;
-              }
-
-              const timeout = respAction.timeout ?? 5000;
-              const deadline = Date.now() + timeout;
-
-              const findMatch = () => {
-                for (const entry of responseLog.snapshot()) {
-                  if (entry.ts < sinceTs) continue;
-                  if (!urlMatch(entry.url)) continue;
-                  if (expectedStatus !== undefined && entry.status !== expectedStatus) continue;
-                  let headersOk = true;
-                  for (const h of headerMatchers) {
-                    const value = entry.headers[h.name];
-                    if (value === undefined || !h.test(value)) {
-                      headersOk = false;
-                      break;
-                    }
-                  }
-                  if (headersOk) return entry;
-                }
-                return null;
-              };
-
-              let match = findMatch();
-              while (!match && Date.now() < deadline) {
-                await new Promise((resolve) => setTimeout(resolve, 50));
-                match = findMatch();
-              }
-
-              if (!match) {
-                const recent = responseLog.snapshot().slice(-5).map((e) => `${e.status} ${e.url}`).join('\n  ');
-                throw new Error(
-                  `expectResponse timed out after ${timeout}ms.\n` +
-                  `  url pattern: ${urlPattern}\n` +
-                  (expectedStatus !== undefined ? `  expected status: ${expectedStatus}\n` : '') +
-                  (headerMatchers.length > 0 ? `  expected headers: ${headerMatchers.map((h) => `${h.name}=${h.pattern}`).join(', ')}\n` : '') +
-                  `  recent responses:\n  ${recent || '<none>'}`
-                );
-              }
-
-              if (debugMode) {
-                console.log(`[DEBUG] expectResponse matched: ${match.status} ${match.url}`);
-              }
-              sizeResults.push({ action, status: 'passed' });
-              safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-            } catch (e) {
-              const errMsg = e instanceof Error ? e.message : String(e);
-              sizeResults.push({ action, status: 'failed', error: errMsg });
-              safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-              throw e;
-            }
-            continue;
-          }
-
-          // Use the new executeActionWithRetry for all other actions
+          const stepStartTs = lastStepEndTs;
           const actionExtras = await executeActionWithRetry(page, action, index, {
             baseUrl: options.baseUrl ?? test.config?.web?.baseUrl,
             context: executionContext,
@@ -2037,6 +1975,8 @@ export const runWebTest = async (
             browserName,
             healing: options.healing,
             testFilePath: options.testFilePath,
+            responseLog,
+            stepStartTs,
           });
 
           sizeResults.push({ action, status: 'passed', logOutput: actionExtras.logOutput });

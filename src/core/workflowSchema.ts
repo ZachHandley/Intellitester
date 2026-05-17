@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { webServerEntrySchema } from './schema';
 
 const nonEmptyString = z.string().trim().min(1, 'Value cannot be empty');
 
@@ -52,16 +53,12 @@ const workflowCleanupConfigSchema = z.object({
   scanUntracked: z.boolean().optional().describe('Scan for untracked resources using provider heuristics'),
 }).passthrough().describe('Resource cleanup configuration'); // Allow provider-specific configs like appwrite: {...}
 
-// Workflow-specific web server config
-const workflowWebServerSchema = z.object({
-  command: nonEmptyString.optional().describe('Command to start the web server'),
-  auto: z.boolean().optional().describe('Auto-detect server start command from package.json'),
-  url: nonEmptyString.url().describe('URL to wait for before starting tests'),
-  reuseExistingServer: z.boolean().default(true).describe('Use existing server if already running at the URL'),
-  timeout: z.number().int().positive().default(30000).describe('Timeout in milliseconds to wait for server to start'),
-  workdir: nonEmptyString.optional().describe('Working directory for the web server command'),
-  cwd: nonEmptyString.optional().describe('Deprecated: use workdir instead'),
-}).describe('Configuration for starting a web server before tests');
+// Workflow-specific web server config -- reuses the canonical entry schema and
+// accepts either a single object or an ordered list of entries.
+const workflowWebServerSchema = z.union([
+  webServerEntrySchema,
+  z.array(webServerEntrySchema).min(1),
+]);
 
 // Workflow configuration
 const workflowConfigSchema = z.object({

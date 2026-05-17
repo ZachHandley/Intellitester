@@ -215,53 +215,134 @@
           "additionalProperties": {}
         },
         "webServer": {
-          "description": "Configuration for starting a web server before tests",
-          "type": "object",
-          "properties": {
-            "command": {
-              "description": "Command to start the web server",
-              "type": "string",
-              "minLength": 1
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "description": "Identifier used in logs and the marker file (defaults to server-1, server-2, ...)",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "command": {
+                  "description": "Command to start the web server",
+                  "type": "string",
+                  "minLength": 1
+                },
+                "auto": {
+                  "description": "Automatically detect and run the dev server from package.json",
+                  "type": "boolean"
+                },
+                "static": {
+                  "description": "Serve a static directory instead of running a command",
+                  "type": "string"
+                },
+                "url": {
+                  "description": "URL to wait for before this server is considered ready",
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "uri"
+                },
+                "port": {
+                  "description": "Port number for the web server",
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "reuseExistingServer": {
+                  "description": "Reuse an existing server already running at the URL",
+                  "default": true,
+                  "type": "boolean"
+                },
+                "timeout": {
+                  "description": "Timeout in milliseconds to wait for server to become available",
+                  "default": 30000,
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "workdir": {
+                  "description": "Working directory for the server command",
+                  "type": "string"
+                },
+                "cwd": {
+                  "description": "Deprecated: use workdir instead",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "url",
+                "reuseExistingServer",
+                "timeout"
+              ],
+              "additionalProperties": false
             },
-            "auto": {
-              "description": "Auto-detect server start command from package.json",
-              "type": "boolean"
-            },
-            "url": {
-              "description": "URL to wait for before starting tests",
-              "type": "string",
-              "minLength": 1,
-              "format": "uri"
-            },
-            "reuseExistingServer": {
-              "description": "Use existing server if already running at the URL",
-              "default": true,
-              "type": "boolean"
-            },
-            "timeout": {
-              "description": "Timeout in milliseconds to wait for server to start",
-              "default": 30000,
-              "type": "integer",
-              "exclusiveMinimum": 0,
-              "maximum": 9007199254740991
-            },
-            "workdir": {
-              "description": "Working directory for the web server command",
-              "type": "string",
-              "minLength": 1
-            },
-            "cwd": {
-              "description": "Deprecated: use workdir instead",
-              "type": "string",
-              "minLength": 1
+            {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "description": "Identifier used in logs and the marker file (defaults to server-1, server-2, ...)",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "command": {
+                    "description": "Command to start the web server",
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "auto": {
+                    "description": "Automatically detect and run the dev server from package.json",
+                    "type": "boolean"
+                  },
+                  "static": {
+                    "description": "Serve a static directory instead of running a command",
+                    "type": "string"
+                  },
+                  "url": {
+                    "description": "URL to wait for before this server is considered ready",
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "uri"
+                  },
+                  "port": {
+                    "description": "Port number for the web server",
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "reuseExistingServer": {
+                    "description": "Reuse an existing server already running at the URL",
+                    "default": true,
+                    "type": "boolean"
+                  },
+                  "timeout": {
+                    "description": "Timeout in milliseconds to wait for server to become available",
+                    "default": 30000,
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "workdir": {
+                    "description": "Working directory for the server command",
+                    "type": "string"
+                  },
+                  "cwd": {
+                    "description": "Deprecated: use workdir instead",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url",
+                  "reuseExistingServer",
+                  "timeout"
+                ],
+                "additionalProperties": false
+              }
             }
-          },
-          "required": [
-            "url",
-            "reuseExistingServer",
-            "timeout"
-          ],
-          "additionalProperties": false
+          ]
         }
       },
       "additionalProperties": false

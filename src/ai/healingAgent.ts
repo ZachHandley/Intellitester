@@ -4,6 +4,7 @@ import type { Page } from 'playwright';
 import type { Action, Locator } from '../core/types';
 import type { AIConfig } from './types';
 import { buildModel, buildCompletionOptions } from './provider';
+import { cssEscape } from '../executors/web/cssEscape';
 
 export interface HealingContext {
   page: Page;
@@ -68,7 +69,7 @@ async function checkByRole(
 
 async function checkTestId(page: Page, testId: string): Promise<SelectorCheckResult> {
   try {
-    const selector = `[data-testid="${testId}"], #${CSS.escape(testId)}`;
+    const selector = `[data-testid="${testId}"], #${cssEscape(testId)}`;
     const count = await page.locator(selector).count();
     return { found: count > 0, count };
   } catch (e) {

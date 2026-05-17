@@ -22,12 +22,13 @@ import { AppwriteTestClient, createTestContext, APPWRITE_PATTERNS, APPWRITE_UPDA
 import { getBrowserLaunchOptions, getBrowserTimingConfig, parseViewportSize } from './browserOptions.js';
 import { compileMatcher } from './matchers.js';
 import { ResponseLog } from './responseLog.js';
+import { cssEscape } from './cssEscape';
 import { getAISuggestion } from '../../ai/errorHelper';
 import { runHealingAgent, type HealingContext } from '../../ai/healingAgent';
 import { TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
 import { track as trackResource } from '../../integration/index.js';
 import type { TrackedResource as IntegrationTrackedResource } from '../../integration/index.js';
-import { webServerManager, type WebServerConfig } from './webServerManager.js';
+import { webServerManager, type WebServerConfig, type WebServerInput } from './webServerManager.js';
 import { evaluate, terminateOCRWorker } from '../../ai/evaluator';
 
 export type BrowserName = 'chromium' | 'firefox' | 'webkit';
@@ -40,7 +41,7 @@ export interface WebRunOptions {
   headed?: boolean;
   screenshotDir?: string;
   defaultTimeoutMs?: number;
-  webServer?: WebServerConfig;
+  webServer?: WebServerInput;
   debug?: boolean;
   interactive?: boolean;
   aiConfig?: import('../../ai/types').AIConfig;
@@ -61,8 +62,20 @@ export interface WebRunOptions {
     enabled: boolean;
     maxAttempts?: number;
   };
+  /** Callback invoked before each step begins for real-time output. */
+  onStepStart?: (info: { action: Action; index: number; total: number }) => void;
   /** Callback invoked after each step completes (passed or failed) for real-time output */
   onStepComplete?: (result: StepResult, index: number, total: number) => void;
+}
+
+/** Invoke a step callback without letting an exception in the user code cancel the test run. */
+function safeCallback(label: string, fn: (() => void) | undefined): void {
+  if (!fn) return;
+  try {
+    fn();
+  } catch (e) {
+    console.error(`[intellitester] ${label} callback threw:`, e);
+  }
 }
 
 export interface StepResult {
@@ -142,7 +155,7 @@ const resolveLocator = (page: Page, locator: Locator): PWLocator => {
   if (locator.testId) {
     // Try data-testid first (Playwright default), then fallback to id, then class
     return page.locator(
-      `[data-testid="${locator.testId}"], #${CSS.escape(locator.testId)}, .${CSS.escape(locator.testId)}`
+      `[data-testid="${locator.testId}"], #${cssEscape(locator.testId)}, .${cssEscape(locator.testId)}`
     ).first();
   }
   if (locator.text) return page.getByText(locator.text);
@@ -206,7 +219,7 @@ const resolveLocatorInContext = (
   if (locator.testId) {
     // Try data-testid first (Playwright default), then fallback to id, then class
     return context.locator(
-      `[data-testid="${locator.testId}"], #${CSS.escape(locator.testId)}, .${CSS.escape(locator.testId)}`
+      `[data-testid="${locator.testId}"], #${cssEscape(locator.testId)}, .${cssEscape(locator.testId)}`
     ).first();
   }
   if (locator.text) return context.getByText(locator.text);
@@ -1295,15 +1308,17 @@ export const runWebTest = async (
     const requiresTrackingEnv = Boolean(
       test.config?.appwrite?.cleanup || test.config?.appwrite?.cleanupOnFailure
     );
-    // Only force reuseExistingServer: false if we own tracking AND user didn't explicitly set it
-    const userExplicitlySetReuse = options.webServer.reuseExistingServer !== undefined;
-    const webServerConfig = (ownsTracking && requiresTrackingEnv && !userExplicitlySetReuse)
-      ? { ...options.webServer, reuseExistingServer: false }
-      : options.webServer;
-    if (ownsTracking && requiresTrackingEnv && !userExplicitlySetReuse) {
+    const wsEntries = Array.isArray(options.webServer) ? options.webServer : [options.webServer];
+    const userExplicitlySetReuse = wsEntries.some((e) => e.reuseExistingServer !== undefined);
+    const shouldForceNoReuse = ownsTracking && requiresTrackingEnv && !userExplicitlySetReuse;
+    if (shouldForceNoReuse) {
       console.log('[Intellitester] Appwrite cleanup enabled; restarting server to inject tracking env.');
     }
-    await webServerManager.start(webServerConfig);
+    const normalized = wsEntries.map((entry) => ({
+      ...entry,
+      ...(shouldForceNoReuse ? { reuseExistingServer: false } : {}),
+    }));
+    await webServerManager.start(normalized.length === 1 ? normalized[0] : normalized);
   } else if (options.skipWebServerStart) {
     console.log('Using existing web server (owned by CLI)');
   }
@@ -1639,6 +1654,9 @@ export const runWebTest = async (
         if (debugMode) {
           console.log(`[DEBUG] Executing step ${index + 1}: ${action.type}`);
         }
+        safeCallback('onStepStart', options.onStepStart
+          ? () => options.onStepStart!({ action, index, total: test.steps.length })
+          : undefined);
 
         // Merge server-tracked resources before each action (only if we own tracking)
         const serverResources = trackingServer?.getResources(sessionId) ?? [];
@@ -1686,7 +1704,9 @@ export const runWebTest = async (
               : ssAction.name;
             const screenshotPath = await runScreenshot(page, screenshotName, screenshotDir, index, browserName);
             sizeResults.push({ action, status: 'passed', screenshotPath });
-            options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+            safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
             const trackedPayload = buildTrackPayload(action, index, { screenshotPath });
             if (trackedPayload) {
               await trackResource(trackedPayload);
@@ -1754,7 +1774,9 @@ export const runWebTest = async (
               screenshotPath: evalScreenshotPath,
               logOutput: `Evaluate passed (${evalResult.mode}): ${evalResult.reason}`,
             });
-            options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+            safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
             continue;
           }
 
@@ -1805,7 +1827,9 @@ export const runWebTest = async (
                 throw new Error('saveStorageState requires either `path` or `handler` (schema should have caught this)');
               }
               sizeResults.push({ action, status: 'passed' });
-              options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+              safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
               const trackedPayload = buildTrackPayload(action, index);
               if (trackedPayload) {
                 await trackResource(trackedPayload);
@@ -1813,7 +1837,9 @@ export const runWebTest = async (
             } catch (e) {
               const errMsg = e instanceof Error ? e.message : String(e);
               sizeResults.push({ action, status: 'failed', error: errMsg });
-              options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+              safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
               throw e;
             }
             continue;
@@ -1856,11 +1882,15 @@ export const runWebTest = async (
                 throw new Error(`assertCookies failed:\n  - ${problems.join('\n  - ')}\n  (cookies seen: ${[...names].join(', ') || '<none>'})`);
               }
               sizeResults.push({ action, status: 'passed' });
-              options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+              safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
             } catch (e) {
               const errMsg = e instanceof Error ? e.message : String(e);
               sizeResults.push({ action, status: 'failed', error: errMsg });
-              options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+              safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
               throw e;
             }
             continue;
@@ -1931,11 +1961,15 @@ export const runWebTest = async (
                 console.log(`[DEBUG] expectResponse matched: ${match.status} ${match.url}`);
               }
               sizeResults.push({ action, status: 'passed' });
-              options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+              safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
             } catch (e) {
               const errMsg = e instanceof Error ? e.message : String(e);
               sizeResults.push({ action, status: 'failed', error: errMsg });
-              options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+              safeCallback('onStepComplete', options.onStepComplete
+              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+              : undefined);
               throw e;
             }
             continue;
@@ -1954,11 +1988,15 @@ export const runWebTest = async (
           });
 
           sizeResults.push({ action, status: 'passed', logOutput: actionExtras.logOutput });
-          options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+          safeCallback('onStepComplete', options.onStepComplete
+            ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+            : undefined);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           sizeResults.push({ action, status: 'failed', error: message });
-          options.onStepComplete?.(sizeResults[sizeResults.length - 1], index, test.steps.length);
+          safeCallback('onStepComplete', options.onStepComplete
+            ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
+            : undefined);
           _sizeTestFailed = true;
           overallFailed = true;
           // Don't throw - continue to next viewport size if there is one

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { webServerEntrySchema } from './schema';
 
 const nonEmptyString = z.string().trim().min(1, 'Value cannot be empty');
 
@@ -55,16 +56,12 @@ const pipelineCleanupConfigSchema = z.object({
   on_failure: z.boolean().default(true).describe('Run cleanup even if pipeline fails'),
 }).passthrough().describe('Resource cleanup configuration'); // Allow provider-specific configs like appwrite: {...}
 
-// Pipeline-specific web server config
-const pipelineWebServerSchema = z.object({
-  command: nonEmptyString.optional().describe('Command to start the web server'),
-  auto: z.boolean().optional().describe('Auto-detect server start command from package.json'),
-  url: nonEmptyString.url().describe('URL to wait for before starting workflows'),
-  reuseExistingServer: z.boolean().default(true).describe('Use existing server if already running at the URL'),
-  timeout: z.number().int().positive().default(30000).describe('Timeout in milliseconds to wait for server to start'),
-  workdir: nonEmptyString.optional().describe('Working directory for the web server command'),
-  cwd: nonEmptyString.optional().describe('Deprecated: use workdir instead'),
-}).describe('Configuration for starting a web server before workflows');
+// Pipeline-specific web server config -- reuses the canonical entry schema and
+// accepts either a single object or an ordered list of entries.
+const pipelineWebServerSchema = z.union([
+  webServerEntrySchema,
+  z.array(webServerEntrySchema).min(1),
+]);
 
 // Pipeline configuration (similar to workflow config)
 const pipelineConfigSchema = z.object({

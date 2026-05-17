@@ -31,7 +31,7 @@ import { startTrackingServer, type TrackingServer, initFileTracking, mergeFileTr
 import { track as trackResource } from '../../integration/index.js';
 import type { TrackedResource as IntegrationTrackedResource } from '../../integration/index.js';
 import { type BrowserName, type StepResult } from './playwrightExecutor';
-import { webServerManager, type WebServerConfig } from './webServerManager.js';
+import { webServerManager, type WebServerInput } from './webServerManager.js';
 import type { AIConfig } from '../../ai/types';
 import { loadCleanupHandlers, executeCleanup } from '../../core/cleanup/index.js';
 import type { CleanupConfig } from '../../core/cleanup/types.js';
@@ -47,7 +47,7 @@ export interface WorkflowOptions extends Omit<ExecutorOptions, 'storageState'> {
   /** AI configuration for interactive/healing mode */
   aiConfig?: AIConfig;
   /** Web server configuration */
-  webServer?: WebServerConfig;
+  webServer?: WebServerInput;
   /** Fallback baseUrl from pipeline config */
   baseUrl?: string;
   /** Playwright storageState (cookies/localStorage) to apply on every new context. File path string or inline {cookies, origins} object. CLI flag is string-only; YAML config can be either. */
@@ -1568,18 +1568,19 @@ export async function runWorkflow(
       const requiresTrackingEnv = Boolean(
         workflow.config?.appwrite?.cleanup || workflow.config?.appwrite?.cleanupOnFailure
       );
-      const userExplicitlySetReuse = webServerConfig.reuseExistingServer !== undefined;
-
-      let effectiveConfig = webServerConfig;
-      if (requiresTrackingEnv && !userExplicitlySetReuse && ownsTracking) {
-        effectiveConfig = { ...webServerConfig, reuseExistingServer: false };
+      const wsEntries = Array.isArray(webServerConfig) ? webServerConfig : [webServerConfig];
+      const userExplicitlySetReuse = wsEntries.some((e) => e.reuseExistingServer !== undefined);
+      const shouldForceNoReuse = requiresTrackingEnv && !userExplicitlySetReuse && ownsTracking;
+      if (shouldForceNoReuse) {
         console.log('[Intellitester] Appwrite cleanup enabled; restarting server to inject tracking env.');
       }
 
-      await webServerManager.start({
-        ...effectiveConfig,
-        workdir: path.resolve(serverCwd, effectiveConfig.workdir ?? effectiveConfig.cwd ?? '.'),
-      });
+      const normalized = wsEntries.map((entry) => ({
+        ...entry,
+        workdir: path.resolve(serverCwd, entry.workdir ?? entry.cwd ?? '.'),
+        ...(shouldForceNoReuse ? { reuseExistingServer: false } : {}),
+      }));
+      await webServerManager.start(normalized.length === 1 ? normalized[0] : normalized);
     } catch (error) {
       console.error('Failed to start web server:', error);
       if (trackingServer) await trackingServer.stop();

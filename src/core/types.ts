@@ -7,6 +7,7 @@ import {
   TestConfigSchema,
   TestDefinitionSchema,
   errorIfSchema,
+  webServerEntrySchema,
 } from './schema';
 import type {
   WorkflowDefinitionSchema,
@@ -29,6 +30,7 @@ export type TestDefinition = Omit<RawTestDefinition, 'config'> & {
 type RawIntellitesterConfig = z.infer<typeof IntellitesterConfigSchema>;
 export type IntellitesterConfig = WithAiModelFilled<RawIntellitesterConfig>;
 export type WebServer = NonNullable<IntellitesterConfig['webServer']>;
+export type WebServerEntry = z.infer<typeof webServerEntrySchema>;
 export type PreviewConfig = NonNullable<IntellitesterConfig['preview']>;
 export type ErrorIf = z.infer<typeof errorIfSchema>;
 

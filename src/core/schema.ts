@@ -426,22 +426,31 @@ const healingSchema = z.object({
   strategies: z.array(z.string().trim()).optional().describe('Healing strategies to use'),
 }).describe('AI-assisted test healing configuration');
 
-const webServerSchema = z
+export const webServerEntrySchema = z
   .object({
+    name: nonEmptyString.optional().describe('Identifier used in logs and the marker file (defaults to server-1, server-2, ...)'),
     command: nonEmptyString.optional().describe('Command to start the web server'),
     auto: z.boolean().optional().describe('Automatically detect and run the dev server from package.json'),
     static: z.string().optional().describe('Serve a static directory instead of running a command'),
-    url: nonEmptyString.url().describe('URL to wait for before starting tests'),
+    url: nonEmptyString.url().describe('URL to wait for before this server is considered ready'),
     port: z.number().int().positive().optional().describe('Port number for the web server'),
-    reuseExistingServer: z.boolean().default(true).describe('Use existing server if already running at the specified URL'),
+    reuseExistingServer: z.boolean().default(true).describe('Reuse an existing server already running at the URL'),
     timeout: z.number().int().positive().default(30000).describe('Timeout in milliseconds to wait for server to become available'),
     workdir: z.string().optional().describe('Working directory for the server command'),
     cwd: z.string().optional().describe('Deprecated: use workdir instead'),
   })
-  .describe('Configuration for starting a web server before running tests')
+  .describe('Configuration for a single web server process')
   .refine((config) => config.command || config.auto || config.static, {
     message: 'WebServerConfig requires command, auto: true, or static directory',
   });
+
+// `webServer` accepts either a single object (existing single-process behaviour)
+// or an array of entries (new). Array entries are started sequentially in order,
+// each waits for its `url` to respond before the next is started.
+const webServerSchema = z.union([
+  webServerEntrySchema,
+  z.array(webServerEntrySchema).min(1).describe('Ordered list of dev processes to start before tests (e.g. API then frontend)'),
+]);
 
 const aiSourceSchema = z.object({
   pagesDir: z.string().optional().describe('Directory containing page components'),

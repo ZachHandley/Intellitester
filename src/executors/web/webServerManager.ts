@@ -1,26 +1,50 @@
 import { spawn, type ChildProcess } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
-import { rmSync } from 'fs';
+import { rmSync, readFileSync, existsSync } from 'fs';
 
+/**
+ * Per-process web server configuration entry.
+ *
+ * `webServer` in YAML can be either a single entry or an ordered array of these.
+ * When given an array, the manager starts each entry sequentially -- waiting for
+ * the previous one's `url` to respond before launching the next -- and shuts
+ * them down in reverse order. This lets users express dependencies like "start
+ * the API before the frontend that proxies to it".
+ */
 export interface WebServerConfig {
+  /** Identifier used in logs and the marker file (defaults to server-1, server-2, ...). */
+  name?: string;
   url: string;
   command?: string;
   auto?: boolean;
   static?: string;
   port?: number;
   workdir?: string;
+  /** Deprecated: use workdir instead. */
   cwd?: string;
   reuseExistingServer?: boolean;
   timeout?: number;
   idleTimeout?: number;
 }
 
-// Marker file constants and helpers for server ownership tracking
-const SERVER_MARKER_FILE = 'server.json';
+/**
+ * Either a single web server config (existing single-process behaviour) or an
+ * ordered list of entries. Array order determines start order and the reverse
+ * determines shutdown order.
+ */
+export type WebServerInput = WebServerConfig | WebServerConfig[];
+
+// ---------------------------------------------------------------------------
+// Marker file constants and helpers
+// ---------------------------------------------------------------------------
+
 const INTELLITESTER_DIR = '.intellitester';
+const SERVERS_MARKER_FILE = 'servers.json';
+const LEGACY_SINGLE_MARKER_FILE = 'server.json';
 
 interface ServerMarker {
+  name: string;
   pid: number;
   port: number;
   url: string;
@@ -29,42 +53,110 @@ interface ServerMarker {
   startTime: string;
 }
 
-const getMarkerPath = (cwd: string): string => path.join(cwd, INTELLITESTER_DIR, SERVER_MARKER_FILE);
-
-async function writeMarkerFile(cwd: string, marker: ServerMarker): Promise<void> {
-  const dir = path.join(cwd, INTELLITESTER_DIR);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getMarkerPath(cwd), JSON.stringify(marker, null, 2), 'utf-8');
+interface ServersMarkerFile {
+  entries: ServerMarker[];
 }
 
-async function readMarkerFile(cwd: string): Promise<ServerMarker | null> {
+const getMarkerDir = (cwd: string): string => path.join(cwd, INTELLITESTER_DIR);
+const getMarkerPath = (cwd: string): string => path.join(getMarkerDir(cwd), SERVERS_MARKER_FILE);
+const getLegacyMarkerPath = (cwd: string): string =>
+  path.join(getMarkerDir(cwd), LEGACY_SINGLE_MARKER_FILE);
+
+async function readMarkers(cwd: string): Promise<ServersMarkerFile> {
+  // New multi-entry format first.
   try {
     const content = await fs.readFile(getMarkerPath(cwd), 'utf-8');
-    return JSON.parse(content) as ServerMarker;
+    const parsed = JSON.parse(content) as Partial<ServersMarkerFile>;
+    if (Array.isArray(parsed.entries)) {
+      return { entries: parsed.entries as ServerMarker[] };
+    }
   } catch {
-    return null;
+    // fall through to legacy
+  }
+  // One-shot migration: legacy server.json was a single object.
+  try {
+    const content = await fs.readFile(getLegacyMarkerPath(cwd), 'utf-8');
+    const legacy = JSON.parse(content) as Partial<ServerMarker>;
+    if (legacy && typeof legacy.pid === 'number' && typeof legacy.url === 'string') {
+      return {
+        entries: [
+          {
+            name: 'server-1',
+            pid: legacy.pid,
+            port: legacy.port ?? 0,
+            url: legacy.url,
+            cwd: legacy.cwd ?? cwd,
+            command: legacy.command ?? '',
+            startTime: legacy.startTime ?? new Date().toISOString(),
+          },
+        ],
+      };
+    }
+  } catch {
+    // no legacy marker either
+  }
+  return { entries: [] };
+}
+
+async function writeMarkers(cwd: string, markers: ServersMarkerFile): Promise<void> {
+  await fs.mkdir(getMarkerDir(cwd), { recursive: true });
+  await fs.writeFile(getMarkerPath(cwd), JSON.stringify(markers, null, 2), 'utf-8');
+}
+
+async function upsertMarker(cwd: string, entry: ServerMarker): Promise<void> {
+  const current = await readMarkers(cwd);
+  const filtered = current.entries.filter((e) => e.url !== entry.url && e.name !== entry.name);
+  filtered.push(entry);
+  await writeMarkers(cwd, { entries: filtered });
+}
+
+async function removeMarker(cwd: string, identifier: { name?: string; url?: string }): Promise<void> {
+  try {
+    const current = await readMarkers(cwd);
+    const filtered = current.entries.filter(
+      (e) =>
+        (identifier.name === undefined || e.name !== identifier.name) &&
+        (identifier.url === undefined || e.url !== identifier.url),
+    );
+    if (filtered.length === 0) {
+      await fs.rm(getMarkerPath(cwd), { force: true });
+    } else {
+      await writeMarkers(cwd, { entries: filtered });
+    }
+  } catch {
+    // Ignore -- the marker file may not exist.
   }
 }
 
-async function deleteMarkerFile(cwd: string): Promise<void> {
+function removeMarkerSync(cwd: string, identifier: { name?: string; url?: string }): void {
   try {
-    await fs.rm(getMarkerPath(cwd), { force: true });
+    const markerPath = getMarkerPath(cwd);
+    if (!existsSync(markerPath)) return;
+    const parsed = JSON.parse(readFileSync(markerPath, 'utf-8')) as Partial<ServersMarkerFile>;
+    if (!Array.isArray(parsed.entries)) return;
+    const filtered = (parsed.entries as ServerMarker[]).filter(
+      (e) =>
+        (identifier.name === undefined || e.name !== identifier.name) &&
+        (identifier.url === undefined || e.url !== identifier.url),
+    );
+    if (filtered.length === 0) {
+      rmSync(markerPath, { force: true });
+    } else {
+      // Synchronous-write fallback for signal handlers.
+      const tmp = JSON.stringify({ entries: filtered }, null, 2);
+      // We deliberately use writeFileSync via fs.rm + readFileSync neighbours;
+      // node's fs has writeFileSync but importing it adds noise -- inline path:
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      require('fs').writeFileSync(markerPath, tmp, 'utf-8');
+    }
   } catch {
-    // Ignore errors
-  }
-}
-
-function deleteMarkerFileSync(cwd: string): void {
-  try {
-    rmSync(getMarkerPath(cwd), { force: true });
-  } catch {
-    // Ignore errors
+    // Ignore -- signal-handler context, best-effort.
   }
 }
 
 function isPidAlive(pid: number): boolean {
   try {
-    process.kill(pid, 0); // Signal 0 just checks if process exists
+    process.kill(pid, 0);
     return true;
   } catch {
     return false;
@@ -80,39 +172,9 @@ async function isServerRunning(url: string): Promise<boolean> {
   }
 }
 
-async function verifyMarker(cwd: string, url: string): Promise<{ valid: boolean; marker: ServerMarker | null; reason?: string }> {
-  const marker = await readMarkerFile(cwd);
-  if (!marker) {
-    return { valid: false, marker: null, reason: 'No marker file found' };
-  }
-  
-  if (marker.url !== url) {
-    return { valid: false, marker, reason: `URL mismatch: expected ${url}, got ${marker.url}` };
-  }
-  
-  if (marker.cwd !== cwd) {
-    return { valid: false, marker, reason: `CWD mismatch: expected ${cwd}, got ${marker.cwd}` };
-  }
-  
-  if (!isPidAlive(marker.pid)) {
-    return { valid: false, marker, reason: `PID ${marker.pid} is not alive` };
-  }
-  
-  // Verify the server is actually responding (with retries)
-  let serverResponding = false;
-  for (let i = 0; i < 3; i++) {
-    if (await isServerRunning(url)) {
-      serverResponding = true;
-      break;
-    }
-    await new Promise(r => setTimeout(r, 500));
-  }
-  if (!serverResponding) {
-    return { valid: false, marker, reason: 'Server not responding to HTTP after retries' };
-  }
-  
-  return { valid: true, marker };
-}
+// ---------------------------------------------------------------------------
+// Auto-detect helpers (unchanged from previous version)
+// ---------------------------------------------------------------------------
 
 async function readPackageJson(cwd: string): Promise<Record<string, unknown> | null> {
   try {
@@ -132,31 +194,19 @@ type FrameworkInfo = {
 
 function detectFramework(pkg: Record<string, unknown> | null): FrameworkInfo | null {
   if (!pkg) return null;
-
-  const deps = { ...(pkg.dependencies as Record<string, string> || {}), ...(pkg.devDependencies as Record<string, string> || {}) };
-
-  if (deps['next']) {
-    return { name: 'next', buildCommand: 'npx -y next start', devCommand: 'next dev' };
-  }
-  if (deps['nuxt']) {
-    return { name: 'nuxt', buildCommand: 'node .output/server/index.mjs', devCommand: 'nuxi dev' };
-  }
-  if (deps['astro']) {
-    return { name: 'astro', buildCommand: 'npx -y astro dev', devCommand: 'astro dev' };
-  }
-  if (deps['@sveltejs/kit']) {
-    return { name: 'sveltekit', buildCommand: 'npx -y vite preview', devCommand: 'vite dev' };
-  }
+  const deps = {
+    ...((pkg.dependencies as Record<string, string>) || {}),
+    ...((pkg.devDependencies as Record<string, string>) || {}),
+  };
+  if (deps['next']) return { name: 'next', buildCommand: 'npx -y next start', devCommand: 'next dev' };
+  if (deps['nuxt']) return { name: 'nuxt', buildCommand: 'node .output/server/index.mjs', devCommand: 'nuxi dev' };
+  if (deps['astro']) return { name: 'astro', buildCommand: 'npx -y astro dev', devCommand: 'astro dev' };
+  if (deps['@sveltejs/kit']) return { name: 'sveltekit', buildCommand: 'npx -y vite preview', devCommand: 'vite dev' };
   if (deps['@remix-run/serve'] || deps['@remix-run/dev']) {
     return { name: 'remix', buildCommand: 'npx -y remix-serve build/server/index.js', devCommand: 'remix vite:dev' };
   }
-  if (deps['vite']) {
-    return { name: 'vite', buildCommand: 'npx -y vite preview', devCommand: 'vite dev' };
-  }
-  if (deps['react-scripts']) {
-    return { name: 'cra', buildCommand: 'npx -y serve -s build', devCommand: 'react-scripts start' };
-  }
-
+  if (deps['vite']) return { name: 'vite', buildCommand: 'npx -y vite preview', devCommand: 'vite dev' };
+  if (deps['react-scripts']) return { name: 'cra', buildCommand: 'npx -y serve -s build', devCommand: 'react-scripts start' };
   return null;
 }
 
@@ -168,7 +218,6 @@ async function detectPackageManager(cwd: string): Promise<PackageManager> {
   const hasBunLock = await fs.stat(path.join(cwd, 'bun.lock')).catch(() => null);
   const hasPnpmLock = await fs.stat(path.join(cwd, 'pnpm-lock.yaml')).catch(() => null);
   const hasYarnLock = await fs.stat(path.join(cwd, 'yarn.lock')).catch(() => null);
-
   if (hasDenoLock) return 'deno';
   if (hasBunLockb || hasBunLock) return 'bun';
   if (hasPnpmLock) return 'pnpm';
@@ -187,18 +236,14 @@ function getDevCommand(pm: PackageManager, script: string): string {
 }
 
 async function detectBuildDirectory(cwd: string): Promise<string | null> {
-  const commonDirs = [
-    '.next', '.output', '.svelte-kit', 'dist', 'build', 'out',
-  ];
+  const commonDirs = ['.next', '.output', '.svelte-kit', 'dist', 'build', 'out'];
   for (const dir of commonDirs) {
     const fullPath = path.join(cwd, dir);
     try {
       const stat = await fs.stat(fullPath);
-      if (stat.isDirectory()) {
-        return dir;
-      }
+      if (stat.isDirectory()) return dir;
     } catch {
-      // Directory doesn't exist, continue
+      // continue
     }
   }
   return null;
@@ -209,45 +254,59 @@ async function detectServerCommand(cwd: string): Promise<string> {
   const framework = detectFramework(pkg);
   const pm = await detectPackageManager(cwd);
   const buildDir = await detectBuildDirectory(cwd);
-
   if (buildDir) {
-    if (framework) {
-      console.log(`Detected ${framework.name} project with build at ${buildDir}`);
-      return framework.buildCommand;
-    }
-    console.log(`Detected build directory at ${buildDir}, using static server`);
+    if (framework) return framework.buildCommand;
     return `npx -y serve ${buildDir}`;
   }
-
   const scripts = pkg?.scripts as Record<string, string> | undefined;
-  if (scripts?.dev) {
-    if (framework) {
-      console.log(`Detected ${framework.name} project, running dev server`);
-    }
-    return getDevCommand(pm, 'dev');
-  }
-
-  if (scripts?.start) {
-    return getDevCommand(pm, 'start');
-  }
-
+  if (scripts?.dev) return getDevCommand(pm, 'dev');
+  if (scripts?.start) return getDevCommand(pm, 'start');
   throw new Error('Could not auto-detect server command. Please specify command explicitly.');
 }
 
+// ---------------------------------------------------------------------------
+// Manager
+// ---------------------------------------------------------------------------
+
+interface ManagedServer {
+  name: string;
+  /** null means we are reusing an externally-managed server (not ours to kill). */
+  process: ChildProcess | null;
+  url: string;
+  cwd: string;
+  startedAt: number;
+}
+
+type ServerState = 'idle' | 'starting' | 'reusing' | 'running' | 'stopping' | 'killed';
+
+function log(name: string, state: ServerState, msg: string): void {
+  console.log(`[webServer:${name}:${state}] ${msg}`);
+}
+
 /**
- * Singleton manager for web server lifecycle.
+ * Normalises a `WebServerInput` (object or array) into a guaranteed-array form
+ * with each entry given a stable name (synthesised from index when omitted).
+ */
+export function normalizeWebServerInput(config: WebServerInput): WebServerConfig[] {
+  const list = Array.isArray(config) ? config : [config];
+  return list.map((entry, i) => ({
+    ...entry,
+    name: entry.name ?? `server-${i + 1}`,
+  }));
+}
+
+/**
+ * Singleton manager for the lifecycle of one or more web server processes.
  *
- * Handles starting/stopping the dev server with proper cleanup to avoid
- * race conditions where a dying server responds to health checks but is
- * gone by the time tests run.
+ * Sequential start, reverse-order shutdown, per-entry readiness polling, and
+ * per-entry marker entries in `.intellitester/servers.json` for cross-run reuse.
  */
 class WebServerManager {
   private static instance: WebServerManager;
 
-  private serverProcess: ChildProcess | null = null;
-  private currentUrl: string | null = null;
-  private currentCwd: string | null = null;
-  private stopping: boolean = false;
+  /** Servers indexed by name. Iteration order matches insertion order; shutdown walks it in reverse. */
+  private servers: Map<string, ManagedServer> = new Map();
+  private stopping = false;
 
   private constructor() {}
 
@@ -258,207 +317,221 @@ class WebServerManager {
     return WebServerManager.instance;
   }
 
-  /**
-   * Check if the managed server is currently running
-   */
   isRunning(): boolean {
-    return this.serverProcess !== null && !this.serverProcess.killed;
+    if (this.servers.size === 0) return false;
+    for (const s of this.servers.values()) {
+      if (!s.process || s.process.killed) continue;
+      return true;
+    }
+    // Any externally-reused entry also counts as "running" from the caller's POV.
+    return [...this.servers.values()].some((s) => s.process === null);
   }
 
-  /**
-   * Get the current server URL if running
-   */
+  /** URL of the LAST started server -- the convention is "frontend last" so this matches the test baseUrl. */
   getUrl(): string | null {
-    return this.currentUrl;
+    let last: ManagedServer | null = null;
+    for (const s of this.servers.values()) last = s;
+    return last?.url ?? null;
+  }
+
+  getServer(name: string): ManagedServer | undefined {
+    return this.servers.get(name);
   }
 
   /**
-   * Start a web server with the given config.
-   *
-   * - If a server is already running at the same URL, reuses it (unless reuseExistingServer=false)
-   * - If a server is running at a different URL, stops it first
-   * - Properly waits for any stopping server to fully terminate
+   * Start one or more web servers. Accepts either a single config (existing
+   * single-process behaviour) or an array (multi-process). Array entries are
+   * started sequentially; if any entry fails readiness, previously-started
+   * entries are torn down in reverse before the error is rethrown.
    */
-  async start(config: WebServerConfig): Promise<ChildProcess | null> {
-    const { url, reuseExistingServer = true, timeout = 30000, idleTimeout = 20000 } = config;
-    const cwd = config.workdir ?? config.cwd ?? process.cwd();
-
-    // Wait for any in-progress stop operation
+  async start(config: WebServerInput): Promise<ChildProcess | null> {
+    // Wait for any in-progress stop.
     while (this.stopping) {
-      await new Promise(r => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 100));
     }
 
-    // Check if we already have a server running at this URL
-    if (this.serverProcess && !this.serverProcess.killed && this.currentUrl === url) {
-      // Verify it's actually responding
+    const entries = normalizeWebServerInput(config);
+    let lastSpawned: ChildProcess | null = null;
+    const startedThisCall: string[] = [];
+
+    for (const entry of entries) {
+      try {
+        const proc = await this.startOne(entry);
+        if (proc) lastSpawned = proc;
+        startedThisCall.push(entry.name!);
+      } catch (e) {
+        log(entry.name!, 'idle', `failed to start: ${e instanceof Error ? e.message : String(e)}`);
+        // Tear down anything we successfully started in this call, in reverse.
+        for (const name of [...startedThisCall].reverse()) {
+          await this.stopOne(name).catch(() => undefined);
+        }
+        throw e;
+      }
+    }
+    return lastSpawned;
+  }
+
+  private async startOne(entry: WebServerConfig): Promise<ChildProcess | null> {
+    const name = entry.name!;
+    const url = entry.url;
+    const cwd = entry.workdir ?? entry.cwd ?? process.cwd();
+    const reuseExistingServer = entry.reuseExistingServer ?? true;
+    const timeout = entry.timeout ?? 30000;
+    const idleTimeout = entry.idleTimeout ?? 20000;
+
+    // If we already own this server in-process at the same URL, reuse it.
+    const existing = this.servers.get(name);
+    if (existing && existing.url === url && (existing.process === null || !existing.process.killed)) {
       if (await isServerRunning(url)) {
         if (reuseExistingServer) {
-          console.log(`Server already running at ${url}`);
-          return this.serverProcess;
-        } else {
-          // Need to restart - stop first
-          await this.stop();
+          log(name, 'reusing', `in-process server at ${url}`);
+          return existing.process;
         }
+        await this.stopOne(name);
       } else {
-        // Process exists but not responding - clean it up
-        await this.stop();
+        await this.stopOne(name);
       }
     }
 
-    // If we have a server at a different URL, stop it
-    if (this.serverProcess && !this.serverProcess.killed && this.currentUrl !== url) {
-      await this.stop();
-    }
-
-    // Check if we have a valid marker for a server we previously started
-    const verification = await verifyMarker(cwd, url);
-    if (verification.valid && reuseExistingServer) {
-      // Wait a moment to ensure server is fully ready
-      await new Promise(r => setTimeout(r, 1000));
-      // Double-check it's still responding
-      if (!await isServerRunning(url)) {
-        console.log('Server stopped responding, will start fresh');
-      } else {
-        console.log(`Reusing existing server at ${url} (PID: ${verification.marker!.pid})`);
-        this.currentUrl = url;
-        this.currentCwd = cwd;
+    // Cross-run reuse via marker file.
+    const markers = await readMarkers(cwd);
+    const marker = markers.entries.find((m) => m.url === url || m.name === name);
+    if (marker && reuseExistingServer) {
+      if (isPidAlive(marker.pid) && (await isServerRunning(url))) {
+        log(name, 'reusing', `previously-started server at ${url} (pid ${marker.pid})`);
+        this.servers.set(name, { name, process: null, url, cwd, startedAt: Date.now() });
         return null;
       }
-    }
-
-    // If marker exists but invalid, clean up the orphaned server
-    if (verification.marker && !verification.valid) {
-      console.log(`Cleaning up stale server: ${verification.reason}`);
-      if (isPidAlive(verification.marker.pid)) {
+      // Marker is stale -- clean up the orphan.
+      log(name, 'stopping', `stale marker for ${url}, cleaning up`);
+      if (isPidAlive(marker.pid)) {
         try {
-          process.kill(verification.marker.pid, 'SIGTERM');
-          // Wait a bit for graceful shutdown
-          await new Promise(r => setTimeout(r, 1000));
-          if (isPidAlive(verification.marker.pid)) {
-            process.kill(verification.marker.pid, 'SIGKILL');
+          process.kill(marker.pid, 'SIGTERM');
+          await new Promise((r) => setTimeout(r, 1000));
+          if (isPidAlive(marker.pid)) {
+            process.kill(marker.pid, 'SIGKILL');
+            await new Promise((r) => setTimeout(r, 500));
           }
         } catch {
-          // Process might already be dead
+          // process might already be dead
+        }
+        if (isPidAlive(marker.pid)) {
+          throw new Error(
+            `[webServer:${name}] orphan server pid ${marker.pid} still alive after SIGKILL; ` +
+              `port ${new URL(url).port || ''} likely blocked. Kill it manually and retry.`,
+          );
         }
       }
-      await deleteMarkerFile(cwd);
+      await removeMarker(cwd, { name, url });
     }
 
-    // If something else is running at this URL (not ours), handle it
+    // Externally-running server we don't own?
     if (await isServerRunning(url)) {
       if (!reuseExistingServer) {
         throw new Error(`Port ${new URL(url).port} is already in use by another process`);
       }
-      console.log(`Reusing existing server at ${url}`);
-      return null; // Return null to indicate we're reusing an external server
+      log(name, 'reusing', `external server at ${url}`);
+      this.servers.set(name, { name, process: null, url, cwd, startedAt: Date.now() });
+      return null;
     }
 
-    // Determine the command to run
+    // Determine the spawn command.
     let command: string;
-
-    if (config.command) {
-      command = config.command;
-    } else if (config.static) {
-      const port = config.port ?? new URL(url).port ?? '3000';
-      command = `npx -y serve ${config.static} -l ${port}`;
-    } else if (config.auto) {
+    if (entry.command) {
+      command = entry.command;
+    } else if (entry.static) {
+      const port = entry.port ?? new URL(url).port ?? '3000';
+      command = `npx -y serve ${entry.static} -l ${port}`;
+    } else if (entry.auto) {
       command = await detectServerCommand(cwd);
     } else {
       throw new Error('WebServerConfig requires command, auto: true, or static directory');
     }
 
-    console.log(`Starting server: ${command}`);
-    this.serverProcess = spawn(command, {
+    log(name, 'starting', `${command} (cwd: ${cwd})`);
+    const child = spawn(command, {
       shell: true,
       stdio: 'pipe',
       cwd,
-      detached: true, // Create new process group so we can kill all children
+      detached: true,
     });
-    this.currentUrl = url;
-    this.currentCwd = cwd;
+    this.servers.set(name, { name, process: child, url, cwd, startedAt: Date.now() });
 
     let stderrOutput = '';
     let lastOutputTime = Date.now();
-
-    this.serverProcess.stdout?.on('data', (data) => {
+    const prefix = `[server:${name}]`;
+    child.stdout?.on('data', (data) => {
       lastOutputTime = Date.now();
-      process.stdout.write(`[server] ${data}`);
+      process.stdout.write(`${prefix} ${data}`);
     });
-
-    this.serverProcess.stderr?.on('data', (data) => {
+    child.stderr?.on('data', (data) => {
       lastOutputTime = Date.now();
       stderrOutput += data.toString();
-      process.stderr.write(`[server] ${data}`);
+      process.stderr.write(`${prefix} ${data}`);
     });
 
-    // Delete marker if server exits unexpectedly
-    this.serverProcess.on('exit', () => {
-      if (this.currentCwd) {
-        deleteMarkerFileSync(this.currentCwd);
+    // Clean up the marker entry if the subprocess dies on its own.
+    child.on('exit', () => {
+      const current = this.servers.get(name);
+      if (current?.process === child) {
+        removeMarkerSync(cwd, { name, url });
       }
     });
 
-    // Wait for server to be ready
+    // Wait for the server to be ready.
     await new Promise<void>((resolve, reject) => {
       let resolved = false;
       const startTime = Date.now();
-
       const cleanup = () => {
         resolved = true;
         clearInterval(pollInterval);
       };
 
-      this.serverProcess!.on('close', (code) => {
+      child.on('close', (code) => {
         if (!resolved && code !== 0 && code !== null) {
           cleanup();
-          this.serverProcess = null;
-          this.currentUrl = null;
-          reject(new Error(`Server exited with code ${code}\n${stderrOutput}`));
+          this.servers.delete(name);
+          reject(new Error(`Server "${name}" exited with code ${code}\n${stderrOutput}`));
         }
       });
 
-      this.serverProcess!.on('error', (err) => {
+      child.on('error', (err) => {
         if (!resolved) {
           cleanup();
-          this.serverProcess = null;
-          this.currentUrl = null;
+          this.servers.delete(name);
           reject(err);
         }
       });
 
       const pollInterval = setInterval(async () => {
         if (resolved) return;
-
         if (await isServerRunning(url)) {
           cleanup();
           resolve();
           return;
         }
-
         if (Date.now() - startTime > timeout) {
           cleanup();
-          reject(new Error(`Server at ${url} not ready after ${timeout}ms`));
+          reject(new Error(`Server "${name}" at ${url} not ready after ${timeout}ms`));
           return;
         }
-
         if (Date.now() - lastOutputTime > idleTimeout) {
           cleanup();
-          this.serverProcess?.kill('SIGTERM');
-          this.serverProcess = null;
-          this.currentUrl = null;
-          const lastOutput = stderrOutput.slice(-500);
-          reject(new Error(`Server stalled - no output for ${idleTimeout}ms. Last output:\n${lastOutput}`));
+          child.kill('SIGTERM');
+          this.servers.delete(name);
+          const tail = stderrOutput.slice(-500);
+          reject(new Error(`Server "${name}" stalled - no output for ${idleTimeout}ms. Last output:\n${tail}`));
           return;
         }
       }, 500);
     });
 
-    console.log(`Server ready at ${url}`);
+    log(name, 'running', `ready at ${url}`);
 
-    // Write marker file for future reuse verification
-    if (this.serverProcess?.pid) {
-      await writeMarkerFile(cwd, {
-        pid: this.serverProcess.pid,
+    if (child.pid) {
+      await upsertMarker(cwd, {
+        name,
+        pid: child.pid,
         port: parseInt(new URL(url).port || '80'),
         url,
         cwd,
@@ -467,68 +540,75 @@ class WebServerManager {
       });
     }
 
-    return this.serverProcess;
+    return child;
   }
 
   /**
-   * Stop the managed server and wait for it to fully terminate.
-   * This prevents race conditions where a dying server still responds to health checks.
+   * Stop all managed servers in reverse insertion order. Frontend goes down
+   * before API so the frontend doesn't spam errors during its own teardown.
    */
   async stop(): Promise<void> {
-    if (!this.serverProcess || this.serverProcess.killed) {
-      this.serverProcess = null;
-      this.currentUrl = null;
-      this.currentCwd = null;
+    if (this.servers.size === 0) return;
+    this.stopping = true;
+    try {
+      const names = [...this.servers.keys()].reverse();
+      for (const name of names) {
+        await this.stopOne(name);
+      }
+    } finally {
+      this.stopping = false;
+    }
+  }
+
+  private async stopOne(name: string): Promise<void> {
+    const server = this.servers.get(name);
+    if (!server) return;
+    const { process: child, cwd, url } = server;
+
+    // Externally-reused server: just drop our handle, don't signal anything.
+    if (!child) {
+      this.servers.delete(name);
       return;
     }
 
-    this.stopping = true;
-    console.log('Stopping server...');
+    if (child.killed) {
+      this.servers.delete(name);
+      return;
+    }
 
-    const process = this.serverProcess;
+    log(name, 'stopping', `signalling pid ${child.pid ?? '?'}`);
 
-    // Create a promise that resolves when the process actually exits
     const exitPromise = new Promise<void>((resolve) => {
       const onExit = () => {
-        process.removeListener('close', onExit);
-        process.removeListener('exit', onExit);
+        child.removeListener('close', onExit);
+        child.removeListener('exit', onExit);
         resolve();
       };
-      process.on('close', onExit);
-      process.on('exit', onExit);
-
-      // Also resolve if already dead
-      if (process.killed || process.exitCode !== null) {
-        resolve();
-      }
+      child.on('close', onExit);
+      child.on('exit', onExit);
+      if (child.killed || child.exitCode !== null) resolve();
     });
 
-    // Send SIGTERM to process group (negative PID) to kill children too
-    const pid = process.pid;
+    const pid = child.pid;
     try {
       if (pid) {
         globalThis.process.kill(-pid, 'SIGTERM');
       } else {
-        process.kill('SIGTERM');
+        child.kill('SIGTERM');
       }
     } catch {
-      process.kill('SIGTERM');
+      child.kill('SIGTERM');
     }
 
-    // Wait for exit with a timeout
     const timeoutPromise = new Promise<void>((resolve) => {
       setTimeout(() => {
-        // If still alive after 5 seconds, force kill
-        if (!process.killed && process.exitCode === null) {
-          console.log('Server did not stop gracefully, sending SIGKILL...');
+        if (!child.killed && child.exitCode === null) {
+          log(name, 'stopping', 'did not stop gracefully, sending SIGKILL');
           try {
-            if (pid) {
-              globalThis.process.kill(-pid, 'SIGKILL');
-            } else {
-              process.kill('SIGKILL');
-            }
+            if (pid) globalThis.process.kill(-pid, 'SIGKILL');
+            else child.kill('SIGKILL');
           } catch {
-            process.kill('SIGKILL');
+            child.kill('SIGKILL');
           }
         }
         resolve();
@@ -536,59 +616,62 @@ class WebServerManager {
     });
 
     await Promise.race([exitPromise, timeoutPromise]);
+    // Brief grace period so the OS releases the port.
+    await new Promise((r) => setTimeout(r, 200));
 
-    // Wait a bit more to ensure port is released
-    await new Promise(r => setTimeout(r, 200));
-
-    // Delete marker file before clearing state
-    if (this.currentCwd) {
-      await deleteMarkerFile(this.currentCwd);
-    }
-
-    this.serverProcess = null;
-    this.currentUrl = null;
-    this.currentCwd = null;
-    this.stopping = false;
+    await removeMarker(cwd, { name, url });
+    this.servers.delete(name);
+    log(name, 'killed', 'stopped');
   }
 
   /**
-   * Synchronous kill for signal handlers - kills process group to ensure children die too
+   * Synchronous kill for signal handlers. Walks in reverse insertion order and
+   * sends SIGTERM (followed by SIGKILL after 1s) to each owned subprocess.
+   * State is cleared only AFTER signals are sent so a follow-up stop() can see
+   * the process if it survives.
    */
   kill(): void {
-    if (this.serverProcess && !this.serverProcess.killed) {
-      console.log('Stopping server...');
-      const pid = this.serverProcess.pid;
+    if (this.servers.size === 0) return;
+    const names = [...this.servers.keys()].reverse();
+    for (const name of names) {
+      const server = this.servers.get(name);
+      if (!server) continue;
+      const child = server.process;
+      if (!child) {
+        // External reuse -- nothing to signal.
+        this.servers.delete(name);
+        continue;
+      }
+      if (child.killed) {
+        this.servers.delete(name);
+        continue;
+      }
+      log(name, 'stopping', 'sync kill');
+      const pid = child.pid;
       if (pid) {
         try {
-          // Kill the entire process group (negative PID) to kill shell children too
           process.kill(-pid, 'SIGTERM');
         } catch {
-          // Fallback to regular kill if process group kill fails
-          this.serverProcess.kill('SIGTERM');
+          child.kill('SIGTERM');
         }
-        // Also send SIGKILL after a short delay to force termination
+        // Force SIGKILL after a short delay, then clear state.
         setTimeout(() => {
           try {
             if (pid) process.kill(-pid, 'SIGKILL');
           } catch {
-            // Process already dead, ignore
+            // already dead
           }
+          removeMarkerSync(server.cwd, { name, url: server.url });
+          this.servers.delete(name);
         }, 1000);
       } else {
-        this.serverProcess.kill('SIGTERM');
+        child.kill('SIGTERM');
+        removeMarkerSync(server.cwd, { name, url: server.url });
+        this.servers.delete(name);
       }
     }
-    // Delete marker file synchronously for signal handlers
-    if (this.currentCwd) {
-      deleteMarkerFileSync(this.currentCwd);
-    }
-    this.serverProcess = null;
-    this.currentUrl = null;
-    this.currentCwd = null;
   }
 }
 
-// Export singleton instance
 export const webServerManager = WebServerManager.getInstance();
-
 export { isServerRunning };

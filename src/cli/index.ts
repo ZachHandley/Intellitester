@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 import { loadIntellitesterConfig, loadTestDefinition, loadWorkflowDefinition, isWorkflowFile, isPipelineFile, loadPipelineDefinition, isWorkflowContent, isPipelineContent } from '../core/loader';
 import { runPipeline } from '../executors/web/pipelineExecutor';
-import type { TestDefinition } from '../core/types';
+import type { TestDefinition, Locator } from '../core/types';
 import { runWebTest, type BrowserName } from '../executors/web';
 import { runWorkflow } from '../executors/web/workflowExecutor';
 import { generateTest } from '../generator';
@@ -1435,11 +1435,25 @@ config:
   web:
     baseUrl: http://localhost:3000
 
+  # Single process:
   webServer:
     command: npm run dev
     url: http://localhost:3000
     reuseExistingServer: true
     timeout: 30000
+
+  # Or multiple processes (e.g. API + frontend) -- started in order,
+  # each waits for its url before the next is spawned, shut down in reverse.
+  # The LAST entry's url is treated as the primary test target (baseUrl fallback).
+  # webServer:
+  #   - name: api
+  #     command: pnpm dev
+  #     url: http://localhost:3001/health
+  #     workdir: ./api
+  #   - name: frontend
+  #     command: pnpm dev
+  #     url: http://localhost:3000
+  #     workdir: ./web
 
   cleanup:
     provider: appwrite
@@ -1990,6 +2004,17 @@ const runTestCommand = async (
   // Resolve AI config: global takes priority, test-level as fallback
   const resolvedAiConfig = config?.ai ?? test.config?.ai;
 
+  const stepStartTimes = new Map<number, number>();
+  const formatLocatorBrief = (loc?: Locator): string => {
+    if (!loc) return '';
+    if (loc.testId) return ` testId=${loc.testId}`;
+    if (loc.text) return ` text="${loc.text.slice(0, 30)}"`;
+    if (loc.css) return ` css=${loc.css}`;
+    if (loc.xpath) return ` xpath=${loc.xpath}`;
+    if (loc.role) return ` role=${loc.role}${loc.name ? `[name="${loc.name}"]` : ''}`;
+    if (loc.description) return ` description="${loc.description.slice(0, 30)}"`;
+    return '';
+  };
   const result = await runWebTest(test, {
     baseUrl,
     headed,
@@ -2033,15 +2058,23 @@ const runTestCommand = async (
       enabled: true,
       maxAttempts: config?.healing?.maxAttempts ?? test.config?.healing?.maxAttempts ?? 3,
     } : undefined,
-    onStepComplete: (step) => {
-      const label = `[${step.status === 'passed' ? 'OK' : 'FAIL'}] ${step.action.type}`;
+    onStepStart: ({ action, index, total }) => {
+      stepStartTimes.set(index, Date.now());
+      const tgt = 'target' in action ? (action as { target?: Locator }).target : undefined;
+      console.log(`[${index + 1}/${total}] ${action.type}${formatLocatorBrief(tgt)}`);
+    },
+    onStepComplete: (step, index) => {
+      const start = stepStartTimes.get(index);
+      const dur = start !== undefined ? ` (${Date.now() - start}ms)` : '';
+      stepStartTimes.delete(index);
+      const tag = step.status === 'passed' ? '[OK]' : '[FAIL]';
       if (step.error) {
-        console.error(`${label} - ${step.error}`);
+        console.error(`  ${tag}${dur} ${step.action.type} - ${step.error}`);
       } else if (step.logOutput) {
-        console.log(label);
-        console.log(`  ${step.logOutput}`);
+        console.log(`  ${tag}${dur} ${step.action.type}`);
+        console.log(`    ${step.logOutput}`);
       } else {
-        console.log(label);
+        console.log(`  ${tag}${dur} ${step.action.type}`);
       }
     },
   });
@@ -2332,8 +2365,13 @@ const main = async (): Promise<void> => {
         if (options.preview || options.prod) {
           const hasConfigFile = await fileExists(CONFIG_FILENAME);
           const config = hasConfigFile ? await loadIntellitesterConfig(CONFIG_FILENAME) : undefined;
-          // Use webServer.workdir (or deprecated cwd) from config if specified, otherwise use current directory
-          const webServerWorkdir = config?.webServer?.workdir ?? config?.webServer?.cwd;
+          // Use webServer.workdir (or deprecated cwd) from config if specified, otherwise use current directory.
+          // For array-form webServer, use the LAST entry's workdir (frontend convention).
+          const webServerEntries = Array.isArray(config?.webServer)
+            ? config.webServer
+            : config?.webServer ? [config.webServer] : [];
+          const primaryWs = webServerEntries[webServerEntries.length - 1];
+          const webServerWorkdir = primaryWs?.workdir ?? primaryWs?.cwd;
           const previewCwd = webServerWorkdir
             ? path.resolve(process.cwd(), webServerWorkdir)
             : process.cwd();

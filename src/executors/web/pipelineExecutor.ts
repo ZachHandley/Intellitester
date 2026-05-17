@@ -254,19 +254,20 @@ export async function runPipeline(
       const requiresTrackingEnv = Boolean(
         pipeline.config?.appwrite?.cleanup || pipeline.config?.appwrite?.cleanupOnFailure
       );
-      // Only force reuseExistingServer: false if we own tracking AND user didn't explicitly set it
-      const userExplicitlySetReuse = pipeline.config.webServer.reuseExistingServer !== undefined;
+      const wsConfig = pipeline.config.webServer;
+      const wsEntries = Array.isArray(wsConfig) ? wsConfig : [wsConfig];
+      // Only force reuseExistingServer: false if we own tracking AND user didn't explicitly set it on any entry.
+      const userExplicitlySetReuse = wsEntries.some((e) => e.reuseExistingServer !== undefined);
       const shouldForceNoReuse = ownsTracking && requiresTrackingEnv && !userExplicitlySetReuse;
-      const effectiveWebServerConfig = shouldForceNoReuse
-        ? { ...pipeline.config.webServer, reuseExistingServer: false }
-        : pipeline.config.webServer;
       if (shouldForceNoReuse) {
         console.log('[Intellitester] Appwrite cleanup enabled; restarting server to inject tracking env.');
       }
-      await webServerManager.start({
-        ...effectiveWebServerConfig,
-        workdir: path.resolve(pipelineDir, effectiveWebServerConfig.workdir ?? effectiveWebServerConfig.cwd ?? '.'),
-      });
+      const normalized = wsEntries.map((entry) => ({
+        ...entry,
+        workdir: path.resolve(pipelineDir, entry.workdir ?? entry.cwd ?? '.'),
+        ...(shouldForceNoReuse ? { reuseExistingServer: false } : {}),
+      }));
+      await webServerManager.start(normalized.length === 1 ? normalized[0] : normalized);
     } catch (error) {
       console.error('Failed to start web server:', error);
       if (ownsTracking && trackingServer) await trackingServer.stop();

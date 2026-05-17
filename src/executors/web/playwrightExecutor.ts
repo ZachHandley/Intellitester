@@ -23,6 +23,7 @@ import { getBrowserLaunchOptions, getBrowserTimingConfig, parseViewportSize } fr
 import { compileMatcher } from './matchers.js';
 import { ResponseLog } from './responseLog.js';
 import { cssEscape } from './cssEscape';
+import { cleanupResolvedFiles, resolveUploadFiles, toPlaywrightFiles } from './uploadResolver';
 import { getAISuggestion } from '../../ai/errorHelper';
 import { runHealingAgent, type HealingContext } from '../../ai/healingAgent';
 import { TrackingServer, initFileTracking, mergeFileTrackedResources } from '../../tracking';
@@ -535,9 +536,11 @@ async function executeActionWithRetry(
       enabled: boolean;
       maxAttempts?: number;
     };
+    /** Absolute path to the running test YAML, used to resolve relative file paths for upload/saveStorageState. */
+    testFilePath?: string;
   },
 ): Promise<ActionExtras> {
-  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing } = options;
+  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing, testFilePath } = options;
   const extras: ActionExtras = {};
 
   const buildTrackPayload = (stepExtras?: Record<string, unknown>): IntegrationTrackedResource | null => {
@@ -641,6 +644,54 @@ async function executeActionWithRetry(
             await checkErrorIf(page, clearAction.target, clearAction.errorIf);
             const handle = resolveLocator(page, clearAction.target);
             await handle.clear();
+          }
+          break;
+        }
+        case 'upload': {
+          const uploadAction = action as Extract<Action, { type: 'upload' }>;
+          if (!uploadAction.target && !uploadAction.trigger) {
+            throw new Error('upload action requires either `target` (file input) or `trigger` (button)');
+          }
+          if (uploadAction.target && uploadAction.trigger) {
+            throw new Error('upload action accepts `target` OR `trigger`, not both');
+          }
+          if (debugMode) {
+            console.log(`[DEBUG] Uploading files:`, uploadAction.files);
+            if (uploadAction.target) console.log(`[DEBUG] To input:`, uploadAction.target);
+            if (uploadAction.trigger) console.log(`[DEBUG] Via trigger:`, uploadAction.trigger);
+            if (uploadAction.frame) console.log(`[DEBUG] In frame:`, uploadAction.frame);
+          }
+          const resolved = await resolveUploadFiles(uploadAction.files, {
+            testFilePath,
+            variables: context.variables,
+          });
+          try {
+            const pwFiles = await toPlaywrightFiles(resolved);
+            if (uploadAction.target) {
+              const ctx = uploadAction.frame
+                ? getActionContext(page, uploadAction.frame)
+                : page;
+              if (!uploadAction.frame) {
+                await checkErrorIf(page, uploadAction.target, uploadAction.errorIf);
+              }
+              const handle = resolveLocatorInContext(ctx, uploadAction.target);
+              await handle.setInputFiles(pwFiles);
+            } else if (uploadAction.trigger) {
+              const ctx = uploadAction.frame
+                ? getActionContext(page, uploadAction.frame)
+                : page;
+              if (!uploadAction.frame) {
+                await checkErrorIf(page, uploadAction.trigger, uploadAction.errorIf);
+              }
+              const triggerHandle = resolveLocatorInContext(ctx, uploadAction.trigger);
+              const [chooser] = await Promise.all([
+                page.waitForEvent('filechooser'),
+                triggerHandle.click(),
+              ]);
+              await chooser.setFiles(pwFiles);
+            }
+          } finally {
+            await cleanupResolvedFiles(resolved);
           }
           break;
         }
@@ -1985,6 +2036,7 @@ export const runWebTest = async (
             aiConfig: options.aiConfig,
             browserName,
             healing: options.healing,
+            testFilePath: options.testFilePath,
           });
 
           sizeResults.push({ action, status: 'passed', logOutput: actionExtras.logOutput });

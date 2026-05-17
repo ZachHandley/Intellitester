@@ -102,6 +102,37 @@ const clearActionSchema = z.object({
   errorIf: errorIfSchema.optional(),
 }).describe('Clear the contents of an input field');
 
+// Inline synthetic file: caller supplies name + content directly, no disk read.
+const uploadInlineFileSchema = z.object({
+  name: nonEmptyString.describe('Filename presented to the page (e.g. "resume.pdf")'),
+  mimeType: z.string().trim().optional()
+    .describe('MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.'),
+  content: z.string().optional()
+    .describe('Plain-text file contents. Mutually exclusive with `base64`.'),
+  base64: z.string().optional()
+    .describe('Base64-encoded file contents. Mutually exclusive with `content`.'),
+}).refine((o) => (o.content !== undefined) !== (o.base64 !== undefined), {
+  message: 'inline upload file requires exactly one of `content` or `base64`',
+});
+
+// A single entry in an upload action's `files`: a string (local path or http(s) URL) or an inline object.
+const uploadFileEntrySchema = z.union([
+  nonEmptyString.describe('File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.'),
+  uploadInlineFileSchema,
+]);
+
+const uploadActionSchema = z.object({
+  type: z.literal('upload'),
+  target: LocatorSchema.optional()
+    .describe('The <input type="file"> element. Works even when CSS-hidden. Use this OR `trigger`, not both.'),
+  trigger: LocatorSchema.optional()
+    .describe('A button that opens the OS file chooser when clicked. Use this OR `target`, not both.'),
+  files: z.union([uploadFileEntrySchema, z.array(uploadFileEntrySchema).min(1)])
+    .describe('One file or an ordered list of files. Strings are local paths or http(s) URLs; objects are inline synthetic files.'),
+  frame: FrameLocatorSchema.optional().describe('Iframe context for the target/trigger element'),
+  errorIf: errorIfSchema.optional(),
+}).describe('Upload one or more files to a file input or filechooser-triggering button');
+
 const hoverActionSchema = z.object({
   type: z.literal('hover'),
   target: LocatorSchema,
@@ -319,6 +350,7 @@ const BaseActionSchema = z.discriminatedUnion('type', [
   inputActionSchema,
   typeActionSchema,
   clearActionSchema,
+  uploadActionSchema,
   hoverActionSchema,
   selectActionSchema,
   checkActionSchema,

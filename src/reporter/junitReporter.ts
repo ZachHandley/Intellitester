@@ -48,6 +48,8 @@ function formatActionName(step: StepResult, index: number): string {
       return `step-${index + 1}: debug breakpoint`;
     case 'clear':
       return `step-${index + 1}: clear input`;
+    case 'upload':
+      return `step-${index + 1}: upload`;
     case 'hover':
       return `step-${index + 1}: hover`;
     case 'select':

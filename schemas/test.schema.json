@@ -688,6 +688,201 @@
                     "additionalProperties": false
                   },
                   {
+                    "description": "Upload one or more files to a file input or filechooser-triggering button",
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "upload"
+                      },
+                      "target": {
+                        "description": "The <input type=\"file\"> element. Works even when CSS-hidden. Use this OR `trigger`, not both.",
+                        "type": "object",
+                        "properties": {
+                          "description": {
+                            "description": "AI-friendly description of the element to find",
+                            "type": "string"
+                          },
+                          "testId": {
+                            "description": "data-testid attribute value",
+                            "type": "string"
+                          },
+                          "text": {
+                            "description": "Visible text content",
+                            "type": "string"
+                          },
+                          "css": {
+                            "description": "CSS selector",
+                            "type": "string"
+                          },
+                          "xpath": {
+                            "description": "XPath selector",
+                            "type": "string"
+                          },
+                          "role": {
+                            "description": "ARIA role",
+                            "type": "string"
+                          },
+                          "name": {
+                            "description": "Accessible name",
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "trigger": {
+                        "description": "A button that opens the OS file chooser when clicked. Use this OR `target`, not both.",
+                        "type": "object",
+                        "properties": {
+                          "description": {
+                            "description": "AI-friendly description of the element to find",
+                            "type": "string"
+                          },
+                          "testId": {
+                            "description": "data-testid attribute value",
+                            "type": "string"
+                          },
+                          "text": {
+                            "description": "Visible text content",
+                            "type": "string"
+                          },
+                          "css": {
+                            "description": "CSS selector",
+                            "type": "string"
+                          },
+                          "xpath": {
+                            "description": "XPath selector",
+                            "type": "string"
+                          },
+                          "role": {
+                            "description": "ARIA role",
+                            "type": "string"
+                          },
+                          "name": {
+                            "description": "Accessible name",
+                            "type": "string"
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "files": {
+                        "description": "One file or an ordered list of files. Strings are local paths or http(s) URLs; objects are inline synthetic files.",
+                        "anyOf": [
+                          {
+                            "anyOf": [
+                              {
+                                "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "name": {
+                                    "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "mimeType": {
+                                    "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                    "type": "string"
+                                  },
+                                  "content": {
+                                    "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                    "type": "string"
+                                  },
+                                  "base64": {
+                                    "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "name"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          {
+                            "minItems": 1,
+                            "type": "array",
+                            "items": {
+                              "anyOf": [
+                                {
+                                  "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "mimeType": {
+                                      "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                      "type": "string"
+                                    },
+                                    "content": {
+                                      "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                      "type": "string"
+                                    },
+                                    "base64": {
+                                      "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "name"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      },
+                      "frame": {
+                        "description": "Iframe context for the target/trigger element",
+                        "type": "object",
+                        "properties": {
+                          "css": {
+                            "description": "CSS selector for the iframe element",
+                            "type": "string"
+                          },
+                          "name": {
+                            "description": "Name or id attribute of the iframe",
+                            "type": "string"
+                          },
+                          "index": {
+                            "description": "Zero-based index when multiple iframes match (default: 0)",
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "errorIf": {
+                        "description": "Fail immediately if this condition is met (no waiting)",
+                        "type": "string",
+                        "enum": [
+                          "not-found",
+                          "not-visible",
+                          "disabled",
+                          "empty"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "files"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
                     "description": "Hover over an element",
                     "type": "object",
                     "properties": {
@@ -2403,6 +2598,201 @@
                               "additionalProperties": false
                             },
                             {
+                              "description": "Upload one or more files to a file input or filechooser-triggering button",
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "upload"
+                                },
+                                "target": {
+                                  "description": "The <input type=\"file\"> element. Works even when CSS-hidden. Use this OR `trigger`, not both.",
+                                  "type": "object",
+                                  "properties": {
+                                    "description": {
+                                      "description": "AI-friendly description of the element to find",
+                                      "type": "string"
+                                    },
+                                    "testId": {
+                                      "description": "data-testid attribute value",
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "description": "Visible text content",
+                                      "type": "string"
+                                    },
+                                    "css": {
+                                      "description": "CSS selector",
+                                      "type": "string"
+                                    },
+                                    "xpath": {
+                                      "description": "XPath selector",
+                                      "type": "string"
+                                    },
+                                    "role": {
+                                      "description": "ARIA role",
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "description": "Accessible name",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "trigger": {
+                                  "description": "A button that opens the OS file chooser when clicked. Use this OR `target`, not both.",
+                                  "type": "object",
+                                  "properties": {
+                                    "description": {
+                                      "description": "AI-friendly description of the element to find",
+                                      "type": "string"
+                                    },
+                                    "testId": {
+                                      "description": "data-testid attribute value",
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "description": "Visible text content",
+                                      "type": "string"
+                                    },
+                                    "css": {
+                                      "description": "CSS selector",
+                                      "type": "string"
+                                    },
+                                    "xpath": {
+                                      "description": "XPath selector",
+                                      "type": "string"
+                                    },
+                                    "role": {
+                                      "description": "ARIA role",
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "description": "Accessible name",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "files": {
+                                  "description": "One file or an ordered list of files. Strings are local paths or http(s) URLs; objects are inline synthetic files.",
+                                  "anyOf": [
+                                    {
+                                      "anyOf": [
+                                        {
+                                          "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "name": {
+                                              "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            "mimeType": {
+                                              "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                              "type": "string"
+                                            },
+                                            "content": {
+                                              "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                              "type": "string"
+                                            },
+                                            "base64": {
+                                              "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "name"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "minItems": 1,
+                                      "type": "array",
+                                      "items": {
+                                        "anyOf": [
+                                          {
+                                            "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "name": {
+                                                "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                                "type": "string",
+                                                "minLength": 1
+                                              },
+                                              "mimeType": {
+                                                "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                                "type": "string"
+                                              },
+                                              "content": {
+                                                "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                                "type": "string"
+                                              },
+                                              "base64": {
+                                                "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "name"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                },
+                                "frame": {
+                                  "description": "Iframe context for the target/trigger element",
+                                  "type": "object",
+                                  "properties": {
+                                    "css": {
+                                      "description": "CSS selector for the iframe element",
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "description": "Name or id attribute of the iframe",
+                                      "type": "string"
+                                    },
+                                    "index": {
+                                      "description": "Zero-based index when multiple iframes match (default: 0)",
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "errorIf": {
+                                  "description": "Fail immediately if this condition is met (no waiting)",
+                                  "type": "string",
+                                  "enum": [
+                                    "not-found",
+                                    "not-visible",
+                                    "disabled",
+                                    "empty"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "files"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
                               "description": "Hover over an element",
                               "type": "object",
                               "properties": {
@@ -4051,6 +4441,201 @@
                               "required": [
                                 "type",
                                 "target"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "description": "Upload one or more files to a file input or filechooser-triggering button",
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "upload"
+                                },
+                                "target": {
+                                  "description": "The <input type=\"file\"> element. Works even when CSS-hidden. Use this OR `trigger`, not both.",
+                                  "type": "object",
+                                  "properties": {
+                                    "description": {
+                                      "description": "AI-friendly description of the element to find",
+                                      "type": "string"
+                                    },
+                                    "testId": {
+                                      "description": "data-testid attribute value",
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "description": "Visible text content",
+                                      "type": "string"
+                                    },
+                                    "css": {
+                                      "description": "CSS selector",
+                                      "type": "string"
+                                    },
+                                    "xpath": {
+                                      "description": "XPath selector",
+                                      "type": "string"
+                                    },
+                                    "role": {
+                                      "description": "ARIA role",
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "description": "Accessible name",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "trigger": {
+                                  "description": "A button that opens the OS file chooser when clicked. Use this OR `target`, not both.",
+                                  "type": "object",
+                                  "properties": {
+                                    "description": {
+                                      "description": "AI-friendly description of the element to find",
+                                      "type": "string"
+                                    },
+                                    "testId": {
+                                      "description": "data-testid attribute value",
+                                      "type": "string"
+                                    },
+                                    "text": {
+                                      "description": "Visible text content",
+                                      "type": "string"
+                                    },
+                                    "css": {
+                                      "description": "CSS selector",
+                                      "type": "string"
+                                    },
+                                    "xpath": {
+                                      "description": "XPath selector",
+                                      "type": "string"
+                                    },
+                                    "role": {
+                                      "description": "ARIA role",
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "description": "Accessible name",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "files": {
+                                  "description": "One file or an ordered list of files. Strings are local paths or http(s) URLs; objects are inline synthetic files.",
+                                  "anyOf": [
+                                    {
+                                      "anyOf": [
+                                        {
+                                          "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                          "type": "string",
+                                          "minLength": 1
+                                        },
+                                        {
+                                          "type": "object",
+                                          "properties": {
+                                            "name": {
+                                              "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            "mimeType": {
+                                              "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                              "type": "string"
+                                            },
+                                            "content": {
+                                              "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                              "type": "string"
+                                            },
+                                            "base64": {
+                                              "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": [
+                                            "name"
+                                          ],
+                                          "additionalProperties": false
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "minItems": 1,
+                                      "type": "array",
+                                      "items": {
+                                        "anyOf": [
+                                          {
+                                            "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "name": {
+                                                "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                                "type": "string",
+                                                "minLength": 1
+                                              },
+                                              "mimeType": {
+                                                "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                                "type": "string"
+                                              },
+                                              "content": {
+                                                "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                                "type": "string"
+                                              },
+                                              "base64": {
+                                                "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                                "type": "string"
+                                              }
+                                            },
+                                            "required": [
+                                              "name"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ]
+                                },
+                                "frame": {
+                                  "description": "Iframe context for the target/trigger element",
+                                  "type": "object",
+                                  "properties": {
+                                    "css": {
+                                      "description": "CSS selector for the iframe element",
+                                      "type": "string"
+                                    },
+                                    "name": {
+                                      "description": "Name or id attribute of the iframe",
+                                      "type": "string"
+                                    },
+                                    "index": {
+                                      "description": "Zero-based index when multiple iframes match (default: 0)",
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "errorIf": {
+                                  "description": "Fail immediately if this condition is met (no waiting)",
+                                  "type": "string",
+                                  "enum": [
+                                    "not-found",
+                                    "not-visible",
+                                    "disabled",
+                                    "empty"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "files"
                               ],
                               "additionalProperties": false
                             },
@@ -5810,6 +6395,201 @@
                                   "additionalProperties": false
                                 },
                                 {
+                                  "description": "Upload one or more files to a file input or filechooser-triggering button",
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "upload"
+                                    },
+                                    "target": {
+                                      "description": "The <input type=\"file\"> element. Works even when CSS-hidden. Use this OR `trigger`, not both.",
+                                      "type": "object",
+                                      "properties": {
+                                        "description": {
+                                          "description": "AI-friendly description of the element to find",
+                                          "type": "string"
+                                        },
+                                        "testId": {
+                                          "description": "data-testid attribute value",
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "description": "Visible text content",
+                                          "type": "string"
+                                        },
+                                        "css": {
+                                          "description": "CSS selector",
+                                          "type": "string"
+                                        },
+                                        "xpath": {
+                                          "description": "XPath selector",
+                                          "type": "string"
+                                        },
+                                        "role": {
+                                          "description": "ARIA role",
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "description": "Accessible name",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "trigger": {
+                                      "description": "A button that opens the OS file chooser when clicked. Use this OR `target`, not both.",
+                                      "type": "object",
+                                      "properties": {
+                                        "description": {
+                                          "description": "AI-friendly description of the element to find",
+                                          "type": "string"
+                                        },
+                                        "testId": {
+                                          "description": "data-testid attribute value",
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "description": "Visible text content",
+                                          "type": "string"
+                                        },
+                                        "css": {
+                                          "description": "CSS selector",
+                                          "type": "string"
+                                        },
+                                        "xpath": {
+                                          "description": "XPath selector",
+                                          "type": "string"
+                                        },
+                                        "role": {
+                                          "description": "ARIA role",
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "description": "Accessible name",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "files": {
+                                      "description": "One file or an ordered list of files. Strings are local paths or http(s) URLs; objects are inline synthetic files.",
+                                      "anyOf": [
+                                        {
+                                          "anyOf": [
+                                            {
+                                              "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "name": {
+                                                  "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "mimeType": {
+                                                  "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                                  "type": "string"
+                                                },
+                                                "content": {
+                                                  "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                                  "type": "string"
+                                                },
+                                                "base64": {
+                                                  "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "name"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "minItems": 1,
+                                          "type": "array",
+                                          "items": {
+                                            "anyOf": [
+                                              {
+                                                "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                                "type": "string",
+                                                "minLength": 1
+                                              },
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "name": {
+                                                    "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                  },
+                                                  "mimeType": {
+                                                    "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                                    "type": "string"
+                                                  },
+                                                  "content": {
+                                                    "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                                    "type": "string"
+                                                  },
+                                                  "base64": {
+                                                    "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "name"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    },
+                                    "frame": {
+                                      "description": "Iframe context for the target/trigger element",
+                                      "type": "object",
+                                      "properties": {
+                                        "css": {
+                                          "description": "CSS selector for the iframe element",
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "description": "Name or id attribute of the iframe",
+                                          "type": "string"
+                                        },
+                                        "index": {
+                                          "description": "Zero-based index when multiple iframes match (default: 0)",
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "errorIf": {
+                                      "description": "Fail immediately if this condition is met (no waiting)",
+                                      "type": "string",
+                                      "enum": [
+                                        "not-found",
+                                        "not-visible",
+                                        "disabled",
+                                        "empty"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "files"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
                                   "description": "Hover over an element",
                                   "type": "object",
                                   "properties": {
@@ -7486,6 +8266,201 @@
                                   "required": [
                                     "type",
                                     "target"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "description": "Upload one or more files to a file input or filechooser-triggering button",
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "upload"
+                                    },
+                                    "target": {
+                                      "description": "The <input type=\"file\"> element. Works even when CSS-hidden. Use this OR `trigger`, not both.",
+                                      "type": "object",
+                                      "properties": {
+                                        "description": {
+                                          "description": "AI-friendly description of the element to find",
+                                          "type": "string"
+                                        },
+                                        "testId": {
+                                          "description": "data-testid attribute value",
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "description": "Visible text content",
+                                          "type": "string"
+                                        },
+                                        "css": {
+                                          "description": "CSS selector",
+                                          "type": "string"
+                                        },
+                                        "xpath": {
+                                          "description": "XPath selector",
+                                          "type": "string"
+                                        },
+                                        "role": {
+                                          "description": "ARIA role",
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "description": "Accessible name",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "trigger": {
+                                      "description": "A button that opens the OS file chooser when clicked. Use this OR `target`, not both.",
+                                      "type": "object",
+                                      "properties": {
+                                        "description": {
+                                          "description": "AI-friendly description of the element to find",
+                                          "type": "string"
+                                        },
+                                        "testId": {
+                                          "description": "data-testid attribute value",
+                                          "type": "string"
+                                        },
+                                        "text": {
+                                          "description": "Visible text content",
+                                          "type": "string"
+                                        },
+                                        "css": {
+                                          "description": "CSS selector",
+                                          "type": "string"
+                                        },
+                                        "xpath": {
+                                          "description": "XPath selector",
+                                          "type": "string"
+                                        },
+                                        "role": {
+                                          "description": "ARIA role",
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "description": "Accessible name",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "files": {
+                                      "description": "One file or an ordered list of files. Strings are local paths or http(s) URLs; objects are inline synthetic files.",
+                                      "anyOf": [
+                                        {
+                                          "anyOf": [
+                                            {
+                                              "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                              "type": "string",
+                                              "minLength": 1
+                                            },
+                                            {
+                                              "type": "object",
+                                              "properties": {
+                                                "name": {
+                                                  "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                                  "type": "string",
+                                                  "minLength": 1
+                                                },
+                                                "mimeType": {
+                                                  "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                                  "type": "string"
+                                                },
+                                                "content": {
+                                                  "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                                  "type": "string"
+                                                },
+                                                "base64": {
+                                                  "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "required": [
+                                                "name"
+                                              ],
+                                              "additionalProperties": false
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "minItems": 1,
+                                          "type": "array",
+                                          "items": {
+                                            "anyOf": [
+                                              {
+                                                "description": "File path (relative to test YAML, absolute, or http(s):// URL). Supports {{var}} interpolation.",
+                                                "type": "string",
+                                                "minLength": 1
+                                              },
+                                              {
+                                                "type": "object",
+                                                "properties": {
+                                                  "name": {
+                                                    "description": "Filename presented to the page (e.g. \"resume.pdf\")",
+                                                    "type": "string",
+                                                    "minLength": 1
+                                                  },
+                                                  "mimeType": {
+                                                    "description": "MIME type. If omitted, derived from `name` extension; falls back to application/octet-stream.",
+                                                    "type": "string"
+                                                  },
+                                                  "content": {
+                                                    "description": "Plain-text file contents. Mutually exclusive with `base64`.",
+                                                    "type": "string"
+                                                  },
+                                                  "base64": {
+                                                    "description": "Base64-encoded file contents. Mutually exclusive with `content`.",
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": [
+                                                  "name"
+                                                ],
+                                                "additionalProperties": false
+                                              }
+                                            ]
+                                          }
+                                        }
+                                      ]
+                                    },
+                                    "frame": {
+                                      "description": "Iframe context for the target/trigger element",
+                                      "type": "object",
+                                      "properties": {
+                                        "css": {
+                                          "description": "CSS selector for the iframe element",
+                                          "type": "string"
+                                        },
+                                        "name": {
+                                          "description": "Name or id attribute of the iframe",
+                                          "type": "string"
+                                        },
+                                        "index": {
+                                          "description": "Zero-based index when multiple iframes match (default: 0)",
+                                          "type": "integer",
+                                          "minimum": 0,
+                                          "maximum": 9007199254740991
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "errorIf": {
+                                      "description": "Fail immediately if this condition is met (no waiting)",
+                                      "type": "string",
+                                      "enum": [
+                                        "not-found",
+                                        "not-visible",
+                                        "disabled",
+                                        "empty"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "files"
                                   ],
                                   "additionalProperties": false
                                 },

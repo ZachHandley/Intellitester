@@ -665,6 +665,29 @@ Clear the contents of an input field.
   target: { testId: search-input }
 \`\`\`
 
+#### \`upload\`
+Attach one or more files to a file input. Use \`target\` for a directly-locatable
+\`<input type="file">\` (works even when CSS-hidden), or \`trigger\` for a styled
+button that opens the OS file chooser. Files can be local paths (resolved
+relative to the test YAML), \`http(s)://\` URLs (downloaded to temp and uploaded),
+or inline synthetic files (\`name\` + \`content\` or \`base64\`).
+
+\`\`\`yaml
+# Single local file to a hidden input
+- type: upload
+  target: { testId: avatar-upload }
+  files: ./fixtures/avatar.png
+
+# Mixed sources via a button that opens the OS chooser
+- type: upload
+  trigger: { testId: pick-files }
+  files:
+    - ./fixtures/a.jpg
+    - https://artifacts.example.com/test-fixture.zip
+    - name: notes.txt
+      content: "synthetic test note"
+\`\`\`
+
 #### \`hover\`
 Hover over an element (useful for dropdowns, tooltips).
 

@@ -1792,7 +1792,13 @@ Enable AI healing in \`intellitester.config.yaml\`:
 
 \`\`\`yaml
 ai:
-  # Choose your provider: anthropic, openai, ollama, groq, openrouter
+  # Choose your provider: anthropic, openai, gemini, openrouter, groq,
+  # together, mistral, deepseek, fireworks, perplexity, xai, cohere,
+  # azure, bedrock, fal, ollama, lmStudio, openaiCompat.
+  # For azure/bedrock/fal/lmStudio/openaiCompat (and ollama on a non-default
+  # host), pass extra fields under providerOptions: -- e.g. azure needs
+  # resourceName + deploymentName, bedrock needs region, openaiCompat needs
+  # providerName + baseUrl + defaultModel.
   provider: groq
   model: llama-3.3-70b-versatile
   apiKey: \${GROQ_API_KEY}  # Or use env vars directly
@@ -2084,15 +2090,21 @@ const generateCommand = async (
   } : undefined;  // undefined = auto-detect
 
   // 3. Build options
+  const interactive = Boolean(process.stdout.isTTY);
   const generateOptions = {
     aiConfig: config.ai,
     baseUrl: options.baseUrl,
     platform: options.platform,
     source,
+    onProgress: interactive
+      ? (event: { type: 'GenerateProgress'; message: string }) => {
+          process.stdout.write(`  ${event.message}\n`);
+        }
+      : undefined,
   };
 
   // 4. Generate test
-  console.log('Generating test...');
+  console.log(interactive ? 'Generating test...' : 'Generating test (streaming disabled, non-TTY)...');
   const result = await generateTest(prompt, generateOptions);
 
   if (!result.success) {

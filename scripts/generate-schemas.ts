@@ -56,7 +56,9 @@ console.log('Generating JSON schemas from Zod definitions...\n');
 for (const { schema, file, title } of schemas) {
   try {
     // Generate JSON Schema using Zod v4's built-in method
-    const jsonSchema = z.toJSONSchema(schema) as Record<string, unknown>;
+    const jsonSchema = z.toJSONSchema(schema, {
+      unrepresentable: 'any',
+    }) as Record<string, unknown>;
     jsonSchema.title = title;
 
     const outputPath = join(schemasDir, file);

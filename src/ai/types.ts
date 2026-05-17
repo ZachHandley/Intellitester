@@ -1,18 +1,32 @@
+export const SUPPORTED_PROVIDERS = [
+  'anthropic',
+  'openai',
+  'gemini',
+  'openrouter',
+  'groq',
+  'together',
+  'mistral',
+  'deepseek',
+  'fireworks',
+  'perplexity',
+  'xai',
+  'cohere',
+  'azure',
+  'bedrock',
+  'fal',
+  'ollama',
+  'lmStudio',
+  'openaiCompat',
+] as const;
+
+export type AIProvider = (typeof SUPPORTED_PROVIDERS)[number];
+
 export type AIConfig = {
-  provider: 'anthropic' | 'openai' | 'ollama' | 'groq' | 'openrouter';
+  provider: AIProvider;
   model: string;
   apiKey?: string;
   baseUrl?: string;
   temperature: number;
   maxTokens: number;
+  providerOptions?: Record<string, unknown>;
 };
-
-export interface AIProvider {
-  generateCompletion(prompt: string, systemPrompt?: string): Promise<string>;
-  generateVisionCompletion?(
-    prompt: string,
-    imageBase64: string,
-    imageMimeType: string,
-    systemPrompt?: string,
-  ): Promise<string>;
-}

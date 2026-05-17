@@ -1,7 +1,9 @@
+import { ChatMessage, Workflow, runAgent } from 'blazen';
+import type { Context, JsToolDef } from 'blazen';
 import type { Page } from 'playwright';
 import type { Action, Locator } from '../core/types';
 import type { AIConfig } from './types';
-import { createAIProvider } from './provider';
+import { buildModel, buildCompletionOptions } from './provider';
 
 export interface HealingContext {
   page: Page;
@@ -28,7 +30,6 @@ async function checkSelector(page: Page, selector: string): Promise<SelectorChec
   try {
     const count = await page.locator(selector).count();
     if (count === 0) return { found: false, count: 0 };
-
     const texts = await page.locator(selector).allTextContents();
     return { found: true, count, texts: texts.slice(0, 5) };
   } catch (e) {
@@ -47,9 +48,16 @@ async function checkByText(page: Page, text: string): Promise<SelectorCheckResul
   }
 }
 
-async function checkByRole(page: Page, role: string, name?: string): Promise<SelectorCheckResult> {
+async function checkByRole(
+  page: Page,
+  role: string,
+  name?: string,
+): Promise<SelectorCheckResult> {
   try {
-    const locator = page.getByRole(role as Parameters<Page['getByRole']>[0], name ? { name } : undefined);
+    const locator = page.getByRole(
+      role as Parameters<Page['getByRole']>[0],
+      name ? { name } : undefined,
+    );
     const count = await locator.count();
     if (count === 0) return { found: false, count: 0 };
     return { found: true, count };
@@ -68,167 +76,150 @@ async function checkTestId(page: Page, testId: string): Promise<SelectorCheckRes
   }
 }
 
-function extractLocatorFromResponse(response: string): Locator | null {
-  // Try to extract JSON from the response
-  const jsonMatch = response.match(/\{[\s\S]*?"(?:testId|text|css|role)"[\s\S]*?\}/);
-  if (!jsonMatch) return null;
-
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    if (parsed.testId || parsed.text || parsed.css || parsed.role) {
-      return parsed as Locator;
-    }
-  } catch {
-    // Try to extract from code blocks
-    const codeMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-    if (codeMatch) {
-      try {
-        const parsed = JSON.parse(codeMatch[1]);
-        if (parsed.testId || parsed.text || parsed.css || parsed.role) {
-          return parsed as Locator;
-        }
-      } catch {
-        // Fallback patterns
-      }
-    }
-  }
-
-  // Fallback: Try to extract specific selector patterns
-  const cssMatch = response.match(/css['":\s]+['"]([^'"]+)['"]/i);
-  if (cssMatch) return { css: cssMatch[1] };
-
-  const textMatch = response.match(/text['":\s]+['"]([^'"]+)['"]/i);
-  if (textMatch) return { text: textMatch[1] };
-
-  const testIdMatch = response.match(/testId['":\s]+['"]([^'"]+)['"]/i);
-  if (testIdMatch) return { testId: testIdMatch[1] };
-
-  return null;
+async function validateLocator(page: Page, locator: Locator): Promise<SelectorCheckResult> {
+  if (locator.testId) return checkTestId(page, locator.testId);
+  if (locator.text) return checkByText(page, locator.text);
+  if (locator.css) return checkSelector(page, locator.css);
+  if (locator.role) return checkByRole(page, locator.role, locator.name);
+  return { found: false, count: 0, error: 'No selector field provided' };
 }
+
+const SELECTOR_FIELDS = {
+  type: 'object',
+  description: 'Selector with at least one of testId / text / css / role provided.',
+  properties: {
+    testId: { type: 'string', description: 'data-testid attribute value (most reliable).' },
+    text: { type: 'string', description: 'Visible text content to match.' },
+    css: { type: 'string', description: 'CSS selector (last resort).' },
+    role: { type: 'string', description: 'ARIA role.' },
+    name: { type: 'string', description: 'Optional accessible name (used with role).' },
+  },
+} as const;
+
+const VALIDATE_SELECTOR_TOOL: JsToolDef = {
+  name: 'validate_selector',
+  description:
+    'Try a candidate selector against the live page and get back whether it finds an element.',
+  parameters: SELECTOR_FIELDS,
+};
+
+const FINALIZE_SELECTOR_TOOL: JsToolDef = {
+  name: 'finalize_selector',
+  description:
+    'Commit your final selector. The system validates it; if the selector finds an element the workflow succeeds, otherwise you may try again until iterations run out.',
+  parameters: SELECTOR_FIELDS,
+};
 
 export async function runHealingAgent(
   context: HealingContext,
   aiConfig: AIConfig,
   maxAttempts: number = 3,
 ): Promise<HealingResult> {
-  const provider = createAIProvider(aiConfig);
+  const model = buildModel(aiConfig);
+  const completionOptions = buildCompletionOptions(aiConfig);
 
-  // Get current target info from action
-  const currentTarget = 'target' in context.action ? context.action.target : null;
+  const currentTarget = 'target' in context.action ? (context.action.target as Locator) : null;
+  const initialValidation: string[] = [];
+  if (currentTarget) {
+    const res = await validateLocator(context.page, currentTarget);
+    initialValidation.push(
+      `Failing target ${JSON.stringify(currentTarget)}: ${
+        res.found ? `found ${res.count} elements` : 'NOT FOUND'
+      }${res.error ? ` (${res.error})` : ''}`,
+    );
+  }
 
-  const systemPrompt = `You are debugging a failing web test action. Your goal is to analyze the page and suggest a working selector.
+  const systemPrompt = `You are debugging a failing web test action by finding a working element selector.
 
-When suggesting a selector, respond with a JSON object containing ONE of these fields:
-- testId: for data-testid attributes (most reliable)
-- text: for visible text content
-- css: for CSS selectors
-- role: for ARIA roles (with optional "name" field)
+Prefer selectors in this order:
+1. testId (most stable)
+2. text (good for buttons, links)
+3. role with name (semantic and accessible)
+4. css (last resort)
 
-Example responses:
-{"testId": "submit-button"}
-{"text": "Sign In"}
-{"css": "button.primary"}
-{"role": "button", "name": "Submit"}
+Use the validate_selector tool to probe candidates against the live page. When you find one that works, call finalize_selector to commit. You have a limited budget of iterations.`;
 
-Prefer selectors in this order of reliability:
-1. testId - most stable, unlikely to change
-2. text - good for buttons, links
-3. role + name - good for accessible elements
-4. css - last resort, more brittle
-
-Respond ONLY with the JSON selector object, no other text.`;
-
-  let attempts = 0;
-  let lastExplanation = '';
-
-  while (attempts < maxAttempts) {
-    attempts++;
-
-    // Build context with validation results
-    const validationResults: string[] = [];
-
-    // If we have a current target, check what's wrong with it
-    if (currentTarget) {
-      if (currentTarget.testId) {
-        const result = await checkTestId(context.page, currentTarget.testId);
-        validationResults.push(`testId "${currentTarget.testId}": ${result.found ? `found ${result.count} elements` : 'NOT FOUND'}`);
-      }
-      if (currentTarget.text) {
-        const result = await checkByText(context.page, currentTarget.text);
-        validationResults.push(`text "${currentTarget.text}": ${result.found ? `found ${result.count} elements` : 'NOT FOUND'}`);
-      }
-      if (currentTarget.css) {
-        const result = await checkSelector(context.page, currentTarget.css);
-        validationResults.push(`css "${currentTarget.css}": ${result.found ? `found ${result.count} elements` : 'NOT FOUND'}`);
-      }
-      if (currentTarget.role) {
-        const result = await checkByRole(context.page, currentTarget.role, currentTarget.name);
-        validationResults.push(`role "${currentTarget.role}"${currentTarget.name ? ` name="${currentTarget.name}"` : ''}: ${result.found ? `found ${result.count} elements` : 'NOT FOUND'}`);
-      }
-    }
-
-    const prompt = `Action type: ${context.action.type}
+  const userPrompt = `Action type: ${context.action.type}
 Error: ${context.error}
 
 Failed selector: ${JSON.stringify(currentTarget)}
 
-Validation results:
-${validationResults.length > 0 ? validationResults.join('\n') : 'No current selector to validate'}
+Initial validation:
+${initialValidation.length > 0 ? initialValidation.join('\n') : 'No current selector to validate'}
 
 Page HTML (first 6000 chars):
 ${context.pageContent.slice(0, 6000)}
 
-Based on the page content, suggest a working selector for this action. Respond with a JSON object.`;
+Find a working selector for this action.`;
 
-    try {
-      const response = await provider.generateCompletion(prompt, systemPrompt);
-      const suggestedLocator = extractLocatorFromResponse(response);
+  const wf = new Workflow('ai-healing-agent');
 
-      if (!suggestedLocator) {
-        lastExplanation = `Attempt ${attempts}: Could not parse selector from AI response`;
-        continue;
-      }
+  wf.addStep(
+    'heal',
+    ['blazen::StartEvent'],
+    async (_event: Record<string, unknown>, _ctx: Context) => {
+      let chosen: Locator | null = null;
+      let lastFailure: string | null = null;
 
-      // Validate the suggested selector
-      let isValid = false;
-      if (suggestedLocator.testId) {
-        const result = await checkTestId(context.page, suggestedLocator.testId);
-        isValid = result.found;
-      } else if (suggestedLocator.text) {
-        const result = await checkByText(context.page, suggestedLocator.text);
-        isValid = result.found;
-      } else if (suggestedLocator.css) {
-        const result = await checkSelector(context.page, suggestedLocator.css);
-        isValid = result.found;
-      } else if (suggestedLocator.role) {
-        const result = await checkByRole(context.page, suggestedLocator.role, suggestedLocator.name);
-        isValid = result.found;
-      }
+      const agentResult = await runAgent(
+        model,
+        [ChatMessage.system(systemPrompt), ChatMessage.user(userPrompt)],
+        [VALIDATE_SELECTOR_TOOL, FINALIZE_SELECTOR_TOOL],
+        async (toolName: string, args: unknown) => {
+          const locator = args as Locator;
+          if (toolName === 'validate_selector') {
+            const r = await validateLocator(context.page, locator);
+            return r.found
+              ? { found: true, count: r.count, sample: r.texts ?? [] }
+              : { found: false, count: 0, error: r.error ?? 'No matching elements' };
+          }
+          if (toolName === 'finalize_selector') {
+            const r = await validateLocator(context.page, locator);
+            if (r.found) {
+              chosen = locator;
+              return { status: 'committed', count: r.count };
+            }
+            lastFailure = `Selector ${JSON.stringify(locator)} did not match any elements`;
+            return { status: 'rejected', error: lastFailure };
+          }
+          return { error: `Unknown tool: ${toolName}` };
+        },
+        {
+          maxIterations: maxAttempts,
+          temperature: completionOptions.temperature,
+          maxTokens: completionOptions.maxTokens,
+        },
+      );
 
-      if (isValid) {
-        // Create fixed action with new locator
+      if (chosen) {
         const fixedAction = { ...context.action } as Action & { target: Locator };
         if ('target' in fixedAction) {
-          fixedAction.target = suggestedLocator;
+          fixedAction.target = chosen;
         }
-
         return {
-          success: true,
-          fixedAction: fixedAction as Action,
-          attempts,
-          explanation: `Found working selector: ${JSON.stringify(suggestedLocator)}`,
+          type: 'blazen::StopEvent',
+          result: {
+            success: true,
+            fixedAction: fixedAction as Action,
+            attempts: agentResult.iterations,
+            explanation: `Found working selector: ${JSON.stringify(chosen)}`,
+          } satisfies HealingResult,
         };
       }
 
-      lastExplanation = `Attempt ${attempts}: Suggested selector ${JSON.stringify(suggestedLocator)} did not find any elements`;
-    } catch (e) {
-      lastExplanation = `Attempt ${attempts}: AI error - ${e instanceof Error ? e.message : String(e)}`;
-    }
-  }
+      return {
+        type: 'blazen::StopEvent',
+        result: {
+          success: false,
+          attempts: agentResult.iterations,
+          explanation:
+            lastFailure ??
+            `Could not find a working selector within ${maxAttempts} iterations`,
+        } satisfies HealingResult,
+      };
+    },
+  );
 
-  return {
-    success: false,
-    attempts,
-    explanation: lastExplanation || 'Could not find a working selector within the allowed attempts',
-  };
+  const result = await wf.run({});
+  return result.data as HealingResult;
 }

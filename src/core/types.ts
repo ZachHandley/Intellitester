@@ -14,9 +14,20 @@ import type {
 
 export type Locator = z.infer<typeof LocatorSchema>;
 export type Action = z.infer<typeof ActionSchema>;
-export type TestConfig = z.infer<typeof TestConfigSchema>;
-export type TestDefinition = z.infer<typeof TestDefinitionSchema>;
-export type IntellitesterConfig = z.infer<typeof IntellitesterConfigSchema>;
+type RawTestConfig = z.infer<typeof TestConfigSchema>;
+// Loaders fill `ai.model` from the per-provider default when missing, so
+// consumers can treat it as required (see parseIntellitesterConfig /
+// parseTestDefinition in loader.ts).
+type WithAiModelFilled<T extends { ai?: unknown }> = Omit<T, 'ai'> & {
+  ai?: NonNullable<T['ai']> & { model: string };
+};
+export type TestConfig = WithAiModelFilled<RawTestConfig>;
+type RawTestDefinition = z.infer<typeof TestDefinitionSchema>;
+export type TestDefinition = Omit<RawTestDefinition, 'config'> & {
+  config?: TestConfig;
+};
+type RawIntellitesterConfig = z.infer<typeof IntellitesterConfigSchema>;
+export type IntellitesterConfig = WithAiModelFilled<RawIntellitesterConfig>;
 export type WebServer = NonNullable<IntellitesterConfig['webServer']>;
 export type PreviewConfig = NonNullable<IntellitesterConfig['preview']>;
 export type ErrorIf = z.infer<typeof errorIfSchema>;

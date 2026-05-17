@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import type { ZodIssue, ZodType } from 'zod';
 import { parse } from 'yaml';
 
-import { IntellitesterConfigSchema, TestDefinitionSchema } from './schema';
+import { IntellitesterConfigSchema, TestDefinitionSchema, defaultModelForProvider } from './schema';
 import type { IntellitesterConfig, TestDefinition } from './types';
 import { WorkflowDefinitionSchema, type WorkflowDefinition } from './workflowSchema';
 import { PipelineDefinitionSchema, type PipelineDefinition } from './pipelineSchema';
@@ -67,16 +67,26 @@ const parseWithSchema = <T>(content: string, schema: ZodType<T>, subject: string
   return result.data;
 };
 
-export const parseTestDefinition = (content: string): TestDefinition =>
-  parseWithSchema(content, TestDefinitionSchema, 'test definition');
+export const parseTestDefinition = (content: string): TestDefinition => {
+  const test = parseWithSchema(content, TestDefinitionSchema, 'test definition');
+  if (test.config?.ai && !test.config.ai.model) {
+    test.config.ai.model = defaultModelForProvider(test.config.ai.provider);
+  }
+  return test as TestDefinition;
+};
 
 export const loadTestDefinition = async (filePath: string): Promise<TestDefinition> => {
   const fileContent = await fs.readFile(filePath, 'utf8');
   return parseTestDefinition(fileContent);
 };
 
-export const parseIntellitesterConfig = (content: string): IntellitesterConfig =>
-  parseWithSchema(content, IntellitesterConfigSchema, 'config');
+export const parseIntellitesterConfig = (content: string): IntellitesterConfig => {
+  const config = parseWithSchema(content, IntellitesterConfigSchema, 'config');
+  if (config.ai && !config.ai.model) {
+    config.ai.model = defaultModelForProvider(config.ai.provider);
+  }
+  return config as IntellitesterConfig;
+};
 
 export const loadIntellitesterConfig = async (filePath: string): Promise<IntellitesterConfig> => {
   const fileContent = await fs.readFile(filePath, 'utf8');

@@ -1,373 +1,188 @@
-import { Anthropic } from '@llamaindex/anthropic';
-import { OpenAI } from '@llamaindex/openai';
-import { Ollama } from '@llamaindex/ollama';
+import { CompletionModel } from 'blazen';
+import type {
+  JsAzureOptions,
+  JsBedrockOptions,
+  JsCompletionOptions,
+  JsFalOptions,
+  JsOpenAiCompatConfig,
+  JsProviderOptions,
+} from 'blazen';
 import type { AIConfig, AIProvider } from './types';
-import type { ChatMessage } from 'llamaindex';
+
+const DEFAULT_OLLAMA_HOST = 'localhost';
+const DEFAULT_OLLAMA_PORT = 11434;
+const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434/v1';
+const DEFAULT_LM_STUDIO_HOST = 'localhost';
+const DEFAULT_LM_STUDIO_PORT = 1234;
 
 function resolveEnvVars(value: string): string {
   return value.replace(/\$\{(\w+)\}/g, (_, name) => process.env[name] || '');
 }
 
-class AnthropicProvider implements AIProvider {
-  private client: Anthropic;
-  private config: AIConfig;
+function resolveEnvInValue(value: unknown): unknown {
+  if (typeof value === 'string') return resolveEnvVars(value);
+  if (Array.isArray(value)) return value.map(resolveEnvInValue);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = resolveEnvInValue(v);
+    }
+    return out;
+  }
+  return value;
+}
 
-  constructor(config: AIConfig) {
-    this.config = config;
-    const apiKey = config.apiKey ? resolveEnvVars(config.apiKey) : undefined;
-    this.client = new Anthropic({
-      apiKey,
-      model: this.config.model,
-      temperature: this.config.temperature,
-    });
+function resolveProviderOptions(
+  options: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!options) return {};
+  return resolveEnvInValue(options) as Record<string, unknown>;
+}
+
+function requireString(
+  options: Record<string, unknown>,
+  key: string,
+  provider: AIProvider,
+): string {
+  const v = options[key];
+  if (typeof v !== 'string' || v.length === 0) {
+    throw new Error(
+      `provider "${provider}" requires providerOptions.${key} (string)`,
+    );
+  }
+  return v;
+}
+
+function optionalNumber(
+  options: Record<string, unknown>,
+  key: string,
+  fallback: number,
+): number {
+  const v = options[key];
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  return fallback;
+}
+
+const STANDARD_PROVIDERS = {
+  anthropic: CompletionModel.anthropic,
+  openai: CompletionModel.openai,
+  gemini: CompletionModel.gemini,
+  openrouter: CompletionModel.openrouter,
+  groq: CompletionModel.groq,
+  together: CompletionModel.together,
+  mistral: CompletionModel.mistral,
+  deepseek: CompletionModel.deepseek,
+  fireworks: CompletionModel.fireworks,
+  perplexity: CompletionModel.perplexity,
+  xai: CompletionModel.xai,
+  cohere: CompletionModel.cohere,
+} as const satisfies Record<
+  string,
+  (options?: JsProviderOptions | null) => CompletionModel
+>;
+
+type StandardProvider = keyof typeof STANDARD_PROVIDERS;
+
+function isStandardProvider(provider: AIProvider): provider is StandardProvider {
+  return provider in STANDARD_PROVIDERS;
+}
+
+export function buildModel(config: AIConfig): CompletionModel {
+  const apiKey = config.apiKey ? resolveEnvVars(config.apiKey) : undefined;
+  const { provider, model, baseUrl } = config;
+  const providerOptions = resolveProviderOptions(config.providerOptions);
+
+  if (isStandardProvider(provider)) {
+    const options: JsProviderOptions = {
+      ...(providerOptions as JsProviderOptions),
+      ...(apiKey !== undefined ? { apiKey } : {}),
+      ...(model ? { model } : {}),
+      ...(baseUrl ? { baseUrl } : {}),
+    };
+    return STANDARD_PROVIDERS[provider](options);
   }
 
-  async generateCompletion(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
+  switch (provider) {
+    case 'ollama': {
+      // Preserve historical openai-compat behaviour for configs that don't
+      // explicitly opt into native host/port options. Existing configs that
+      // set only baseUrl (or nothing at all) keep working unchanged.
+      const hasNativeOpts = 'host' in providerOptions || 'port' in providerOptions;
+      if (!hasNativeOpts) {
+        return CompletionModel.openai({
+          apiKey: apiKey ?? 'ollama',
+          baseUrl: baseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+          model,
+        });
+      }
+      const host = (providerOptions.host as string | undefined) ?? DEFAULT_OLLAMA_HOST;
+      const port = optionalNumber(providerOptions, 'port', DEFAULT_OLLAMA_PORT);
+      return CompletionModel.ollama(host, port, model);
     }
-    messages.push({ role: 'user', content: prompt });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in Anthropic response');
+    case 'lmStudio': {
+      const host = (providerOptions.host as string | undefined) ?? DEFAULT_LM_STUDIO_HOST;
+      const port = optionalNumber(providerOptions, 'port', DEFAULT_LM_STUDIO_PORT);
+      return CompletionModel.lmStudio(host, port, model);
     }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-
-  async generateVisionCompletion(
-    prompt: string,
-    imageBase64: string,
-    imageMimeType: string,
-    systemPrompt?: string,
-  ): Promise<string> {
-    const messages: ChatMessage[] = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
+    case 'azure': {
+      const azureOptions: JsAzureOptions = {
+        ...(providerOptions as Partial<JsAzureOptions>),
+        resourceName: requireString(providerOptions, 'resourceName', 'azure'),
+        deploymentName: requireString(providerOptions, 'deploymentName', 'azure'),
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(model ? { model } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+      };
+      return CompletionModel.azure(azureOptions);
     }
-
-    messages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'image_url',
-          image_url: {
-            url: `data:${imageMimeType};base64,${imageBase64}`,
-          },
-        },
-        {
-          type: 'text',
-          text: prompt,
-        },
-      ],
-    });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in Anthropic response');
+    case 'bedrock': {
+      const bedrockOptions: JsBedrockOptions = {
+        ...(providerOptions as Partial<JsBedrockOptions>),
+        region: requireString(providerOptions, 'region', 'bedrock'),
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(model ? { model } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+      };
+      return CompletionModel.bedrock(bedrockOptions);
     }
-    return typeof content === 'string' ? content : JSON.stringify(content);
+    case 'fal': {
+      const falOptions: JsFalOptions = {
+        ...(providerOptions as Partial<JsFalOptions>),
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(model ? { model } : {}),
+        ...(baseUrl ? { baseUrl } : {}),
+      };
+      return CompletionModel.fal(falOptions);
+    }
+    case 'openaiCompat': {
+      const providerId =
+        typeof providerOptions.providerId === 'string'
+          ? (providerOptions.providerId as string)
+          : 'custom';
+      const compatConfig: JsOpenAiCompatConfig = {
+        ...(providerOptions as Partial<JsOpenAiCompatConfig>),
+        providerName: requireString(providerOptions, 'providerName', 'openaiCompat'),
+        baseUrl: baseUrl ?? requireString(providerOptions, 'baseUrl', 'openaiCompat'),
+        apiKey: apiKey ?? requireString(providerOptions, 'apiKey', 'openaiCompat'),
+        defaultModel:
+          model ||
+          (typeof providerOptions.defaultModel === 'string'
+            ? (providerOptions.defaultModel as string)
+            : (() => {
+                throw new Error(
+                  'provider "openaiCompat" requires either a top-level model or providerOptions.defaultModel',
+                );
+              })()),
+      };
+      return CompletionModel.openaiCompat(providerId, compatConfig);
+    }
   }
 }
 
-class OpenAIProvider implements AIProvider {
-  private client: OpenAI;
-  private config: AIConfig;
-
-  constructor(config: AIConfig) {
-    this.config = config;
-    const apiKey = config.apiKey ? resolveEnvVars(config.apiKey) : undefined;
-    const baseURL = config.baseUrl;
-    this.client = new OpenAI({
-      apiKey,
-      model: this.config.model,
-      temperature: this.config.temperature,
-      baseURL,
-    });
-  }
-
-  async generateCompletion(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-    messages.push({ role: 'user', content: prompt });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in OpenAI response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-
-  async generateVisionCompletion(
-    prompt: string,
-    imageBase64: string,
-    imageMimeType: string,
-    systemPrompt?: string,
-  ): Promise<string> {
-    const messages: ChatMessage[] = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-
-    messages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'image_url',
-          image_url: {
-            url: `data:${imageMimeType};base64,${imageBase64}`,
-          },
-        },
-        {
-          type: 'text',
-          text: prompt,
-        },
-      ],
-    });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in OpenAI response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-}
-
-class OllamaProvider implements AIProvider {
-  private client: Ollama;
-  private config: AIConfig;
-
-  constructor(config: AIConfig) {
-    this.config = config;
-    this.client = new Ollama({
-      model: this.config.model,
-      options: {
-        temperature: this.config.temperature,
-      },
-    });
-  }
-
-  async generateCompletion(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-    messages.push({ role: 'user', content: prompt });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in Ollama response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-
-  async generateVisionCompletion(
-    prompt: string,
-    imageBase64: string,
-    imageMimeType: string,
-    systemPrompt?: string,
-  ): Promise<string> {
-    const messages: ChatMessage[] = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-
-    messages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'image_url',
-          image_url: {
-            url: `data:${imageMimeType};base64,${imageBase64}`,
-          },
-        },
-        {
-          type: 'text',
-          text: prompt,
-        },
-      ],
-    });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in Ollama response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-}
-
-class GroqProvider implements AIProvider {
-  private client: OpenAI;
-  private config: AIConfig;
-
-  constructor(config: AIConfig) {
-    this.config = config;
-    const apiKey = config.apiKey ? resolveEnvVars(config.apiKey) : process.env.GROQ_API_KEY;
-    this.client = new OpenAI({
-      apiKey,
-      model: this.config.model,
-      temperature: this.config.temperature,
-      baseURL: 'https://api.groq.com/openai/v1',
-    });
-  }
-
-  async generateCompletion(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-    messages.push({ role: 'user', content: prompt });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in GROQ response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-
-  async generateVisionCompletion(
-    prompt: string,
-    imageBase64: string,
-    imageMimeType: string,
-    systemPrompt?: string,
-  ): Promise<string> {
-    const messages: ChatMessage[] = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-
-    messages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'image_url',
-          image_url: {
-            url: `data:${imageMimeType};base64,${imageBase64}`,
-          },
-        },
-        {
-          type: 'text',
-          text: prompt,
-        },
-      ],
-    });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in GROQ response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-}
-
-class OpenRouterProvider implements AIProvider {
-  private client: OpenAI;
-  private config: AIConfig;
-
-  constructor(config: AIConfig) {
-    this.config = config;
-    const apiKey = config.apiKey ? resolveEnvVars(config.apiKey) : process.env.OPENROUTER_API_KEY;
-    this.client = new OpenAI({
-      apiKey,
-      model: this.config.model,
-      temperature: this.config.temperature,
-      baseURL: 'https://openrouter.ai/api/v1',
-    });
-  }
-
-  async generateCompletion(prompt: string, systemPrompt?: string): Promise<string> {
-    const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-    messages.push({ role: 'user', content: prompt });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in OpenRouter response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-
-  async generateVisionCompletion(
-    prompt: string,
-    imageBase64: string,
-    imageMimeType: string,
-    systemPrompt?: string,
-  ): Promise<string> {
-    const messages: ChatMessage[] = [];
-
-    if (systemPrompt) {
-      messages.push({ role: 'system', content: systemPrompt });
-    }
-
-    messages.push({
-      role: 'user',
-      content: [
-        {
-          type: 'image_url',
-          image_url: {
-            url: `data:${imageMimeType};base64,${imageBase64}`,
-          },
-        },
-        {
-          type: 'text',
-          text: prompt,
-        },
-      ],
-    });
-
-    const response = await this.client.chat({ messages });
-
-    const content = response.message.content;
-    if (!content) {
-      throw new Error('No content in OpenRouter response');
-    }
-    return typeof content === 'string' ? content : JSON.stringify(content);
-  }
-}
-
-export function createAIProvider(config: AIConfig): AIProvider {
-  switch (config.provider) {
-    case 'anthropic':
-      return new AnthropicProvider(config);
-    case 'openai':
-      return new OpenAIProvider(config);
-    case 'ollama':
-      return new OllamaProvider(config);
-    case 'groq':
-      return new GroqProvider(config);
-    case 'openrouter':
-      return new OpenRouterProvider(config);
-  }
+export function buildCompletionOptions(config: AIConfig): JsCompletionOptions {
+  return {
+    temperature: config.temperature,
+    maxTokens: config.maxTokens,
+    model: config.model,
+  };
 }

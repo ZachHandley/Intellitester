@@ -1,3 +1,3 @@
-export { createAIProvider } from './provider';
-export type { AIConfig, AIProvider } from './types';
+export { buildModel, buildCompletionOptions } from './provider';
+export type { AIConfig } from './types';
 export { getAISuggestion, type ErrorSuggestion } from './errorHelper';

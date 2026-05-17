@@ -1,12 +1,18 @@
 /**
- * Test generator that converts natural language to YAML test definitions
+ * Test generator that converts natural language to YAML test definitions.
+ *
+ * Runs as a Blazen Workflow: scan source → run an agentic generate step that
+ * uses a `submit_test_yaml` tool, parsing + Zod-validating each submission and
+ * feeding any error back to the model until the budget is exhausted.
  */
 
+import { ChatMessage, Workflow, runAgent } from 'blazen';
+import type { Context, JsToolDef } from 'blazen';
 import { parse } from 'yaml';
 import type { z } from 'zod';
 import { TestDefinitionSchema } from '../core/schema';
 import type { AIConfig } from '../ai/types';
-import { createAIProvider } from '../ai/provider';
+import { buildModel, buildCompletionOptions } from '../ai/provider';
 import {
   SYSTEM_PROMPT,
   buildPrompt,
@@ -21,7 +27,13 @@ export interface GeneratorOptions {
   platform?: 'web' | 'android' | 'ios';
   additionalContext?: string;
   maxRetries?: number;
-  source?: SourceConfig | null; // null = explicitly disabled, undefined = auto-detect
+  source?: SourceConfig | null;
+  onProgress?: (event: GenerateProgressEvent) => void;
+}
+
+export interface GenerateProgressEvent {
+  type: 'GenerateProgress';
+  message: string;
 }
 
 export interface GeneratorResult {
@@ -32,104 +44,152 @@ export interface GeneratorResult {
   attempts?: number;
 }
 
-/**
- * Strips markdown code blocks from YAML content
- */
-function cleanYamlResponse(response: string): string {
-  // Remove markdown YAML code blocks
-  let cleaned = response.replace(/```ya?ml\n?/gi, '').replace(/```\n?/g, '');
-
-  // Remove leading/trailing whitespace
-  cleaned = cleaned.trim();
-
-  return cleaned;
+interface GenerateEventPayload {
+  systemPrompt: string;
+  userPrompt: string;
 }
 
-/**
- * Generates a test definition from natural language description
- *
- * @param naturalLanguage - The natural language test description
- * @param options - Generator configuration options
- * @returns Promise resolving to the generation result
- */
+const SUBMIT_TEST_YAML_TOOL: JsToolDef = {
+  name: 'submit_test_yaml',
+  description:
+    'Submit your final YAML test definition for validation. The system will parse the YAML and validate it against the TestDefinition schema; if validation fails, the error message is returned and you can try again.',
+  parameters: {
+    type: 'object',
+    properties: {
+      yaml: {
+        type: 'string',
+        description: 'The complete YAML test definition document.',
+      },
+    },
+    required: ['yaml'],
+  },
+};
+
 export async function generateTest(
   naturalLanguage: string,
   options: GeneratorOptions,
 ): Promise<GeneratorResult> {
-  const provider = createAIProvider(options.aiConfig);
-
-  // Scan source if configured (default to auto-detect)
-  let systemPrompt = SYSTEM_PROMPT;
-  if (options.source !== null) {
-    // null = explicitly disabled
-    const sourceConfig = options.source ?? {}; // empty = auto-detect
-    const scanResult = await scanProjectSource(sourceConfig);
-    if (scanResult.allElements.length > 0) {
-      systemPrompt = buildSourceAwareSystemPrompt(scanResult);
-    }
-  }
-
-  const context: PromptContext = {
-    baseUrl: options.baseUrl,
-    platform: options.platform,
-    additionalContext: options.additionalContext,
-  };
-
-  const userPrompt = buildPrompt(naturalLanguage, context);
   const maxRetries = options.maxRetries ?? 3;
+  const model = buildModel(options.aiConfig);
+  const completionOptions = buildCompletionOptions(options.aiConfig);
 
-  let lastError: Error | undefined;
-  let lastYaml: string | undefined;
+  const wf = new Workflow('test-generation');
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      // Build retry-specific prompt with feedback from previous attempt
-      let promptWithFeedback = userPrompt;
-      if (attempt > 0 && lastError) {
-        promptWithFeedback = `${userPrompt}\n\nPrevious attempt failed with error: ${lastError.message}\n\nPlease fix the issue and generate valid YAML.`;
+  wf.addStep(
+    'scan',
+    ['blazen::StartEvent'],
+    async (_event: Record<string, unknown>, ctx: Context) => {
+      let systemPrompt = SYSTEM_PROMPT;
+
+      if (options.source !== null) {
+        await ctx.writeEventToStream({
+          type: 'GenerateProgress',
+          message: 'Scanning project source...',
+        });
+        const sourceConfig = options.source ?? {};
+        const scanResult = await scanProjectSource(sourceConfig);
+        if (scanResult.allElements.length > 0) {
+          systemPrompt = buildSourceAwareSystemPrompt(scanResult);
+        }
       }
 
-      // Generate completion from AI using the system prompt (possibly source-aware)
-      const response = await provider.generateCompletion(promptWithFeedback, systemPrompt);
-
-      // Clean the response
-      const yaml = cleanYamlResponse(response);
-      lastYaml = yaml;
-
-      // Parse YAML
-      const parsed = parse(yaml);
-
-      // Validate against schema
-      const validated = TestDefinitionSchema.parse(parsed);
-
-      // Success!
-      return {
-        success: true,
-        test: validated,
-        yaml,
-        attempts: attempt + 1,
+      const context: PromptContext = {
+        baseUrl: options.baseUrl,
+        platform: options.platform,
+        additionalContext: options.additionalContext,
       };
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      const userPrompt = buildPrompt(naturalLanguage, context);
 
-      // If this was the last retry, return failure
-      if (attempt === maxRetries - 1) {
-        return {
-          success: false,
-          error: `Failed to generate valid test after ${maxRetries} attempts. Last error: ${lastError.message}`,
-          yaml: lastYaml,
-          attempts: maxRetries,
+      await ctx.writeEventToStream({
+        type: 'GenerateProgress',
+        message: 'Asking the model for a test definition...',
+      });
+
+      const payload: GenerateEventPayload = { systemPrompt, userPrompt };
+      return { type: 'GenerateEvent', ...payload };
+    },
+  );
+
+  wf.addStep(
+    'generate',
+    ['GenerateEvent'],
+    async (event: Record<string, unknown>, ctx: Context) => {
+      const { systemPrompt, userPrompt } = event as unknown as GenerateEventPayload;
+
+      const captured: Array<{ test: z.infer<typeof TestDefinitionSchema>; yaml: string }> = [];
+      let lastError: string | null = null;
+      let lastYaml: string | undefined;
+
+      const agentResult = await runAgent(
+        model,
+        [ChatMessage.system(systemPrompt), ChatMessage.user(userPrompt)],
+        [SUBMIT_TEST_YAML_TOOL],
+        async (toolName: string, args: unknown) => {
+          if (toolName !== 'submit_test_yaml') {
+            return { error: `Unknown tool: ${toolName}` };
+          }
+          const submission = args as { yaml?: unknown };
+          if (typeof submission.yaml !== 'string') {
+            lastError = 'submit_test_yaml called without a yaml string';
+            return { status: 'invalid', error: lastError };
+          }
+          lastYaml = submission.yaml;
+          try {
+            const parsed = parse(submission.yaml);
+            const validated = TestDefinitionSchema.parse(parsed);
+            captured.push({ test: validated, yaml: submission.yaml });
+            await ctx.writeEventToStream({
+              type: 'GenerateProgress',
+              message: 'Validation passed.',
+            });
+            return { status: 'valid' };
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+            await ctx.writeEventToStream({
+              type: 'GenerateProgress',
+              message: `Validation failed: ${lastError}. Retrying...`,
+            });
+            return { status: 'invalid', error: lastError };
+          }
+        },
+        {
+          maxIterations: maxRetries,
+          temperature: completionOptions.temperature,
+          maxTokens: completionOptions.maxTokens,
+        },
+      );
+
+      const hit = captured[0];
+      if (hit) {
+        const result: GeneratorResult = {
+          success: true,
+          test: hit.test,
+          yaml: hit.yaml,
+          attempts: agentResult.iterations,
         };
+        return { type: 'blazen::StopEvent', result };
       }
 
-      // Otherwise, continue to next retry
-    }
-  }
+      const result: GeneratorResult = {
+        success: false,
+        error: lastError
+          ? `Failed to generate valid test after ${agentResult.iterations} attempts. Last error: ${lastError}`
+          : 'Model did not submit any test YAML',
+        yaml: lastYaml,
+        attempts: agentResult.iterations,
+      };
+      return { type: 'blazen::StopEvent', result };
+    },
+  );
 
-  // This should never be reached, but TypeScript wants it
-  return {
-    success: false,
-    error: 'Unknown error occurred during test generation',
-    attempts: maxRetries,
-  };
+  const onProgress = options.onProgress;
+  const result = onProgress
+    ? await wf.runStreaming({}, (event: Record<string, unknown>) => {
+        if (event.type === 'GenerateProgress' && typeof event.message === 'string') {
+          onProgress({ type: 'GenerateProgress', message: event.message });
+        }
+      })
+    : await wf.run({});
+
+  return result.data as GeneratorResult;
 }

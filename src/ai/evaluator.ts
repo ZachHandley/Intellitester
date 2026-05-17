@@ -1,7 +1,9 @@
+import { ChatMessage, Workflow } from 'blazen';
+import type { Context, JsToolDef } from 'blazen';
 import { createWorker, type Worker, type RecognizeResult } from 'tesseract.js';
 import { z } from 'zod';
 import type { AIConfig } from './types';
-import { createAIProvider } from './provider';
+import { buildModel, buildCompletionOptions } from './provider';
 
 export interface EvaluateResult {
   passed: boolean;
@@ -30,7 +32,6 @@ interface MatchResult {
   missing: string[];
 }
 
-// Lazy singleton OCR worker
 let ocrWorker: Worker | null = null;
 
 async function getOCRWorker(): Promise<Worker> {
@@ -50,159 +51,118 @@ export async function terminateOCRWorker(): Promise<void> {
 async function runOCR(screenshotBuffer: Buffer): Promise<{ text: string; confidence: number }> {
   const worker = await getOCRWorker();
   const result: RecognizeResult = await worker.recognize(screenshotBuffer);
-
   return {
     text: result.data.text,
     confidence: result.data.confidence,
   };
 }
 
-function matchExpected(
-  text: string,
-  expectedArray: string[],
-  useRegex: boolean,
-): MatchResult {
+function matchExpected(text: string, expectedArray: string[], useRegex: boolean): MatchResult {
   const matched: string[] = [];
   const missing: string[] = [];
 
   for (const expected of expectedArray) {
     let found = false;
-
     if (useRegex) {
       try {
         const regex = new RegExp(expected, 'i');
         found = regex.test(text);
-      } catch (e) {
-        // Invalid regex, treat as literal string
+      } catch {
         found = text.toLowerCase().includes(expected.toLowerCase());
       }
     } else {
       found = text.toLowerCase().includes(expected.toLowerCase());
     }
 
-    if (found) {
-      matched.push(expected);
-    } else {
-      missing.push(expected);
-    }
+    if (found) matched.push(expected);
+    else missing.push(expected);
   }
 
-  return {
-    allMatched: missing.length === 0,
-    matched,
-    missing,
-  };
+  return { allMatched: missing.length === 0, matched, missing };
 }
 
-// Zod schema for AI evaluation response
 const AIEvaluationResponseSchema = z.object({
   passed: z.boolean(),
   reason: z.string(),
 });
 
-function extractJSONFromResponse(response: string): unknown {
-  // Try to extract JSON from markdown code blocks
-  const codeMatch = response.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
-  if (codeMatch) {
-    try {
-      return JSON.parse(codeMatch[1]);
-    } catch {
-      // Continue to fallback
-    }
-  }
-
-  // Try to find raw JSON in the response
-  const jsonMatch = response.match(/\{[\s\S]*?"passed"[\s\S]*?\}/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {
-      // Continue to fallback
-    }
-  }
-
-  // Last resort: try to parse the entire response as JSON
-  try {
-    return JSON.parse(response);
-  } catch {
-    throw new Error('Could not extract valid JSON from AI response');
-  }
-}
+const SUBMIT_EVALUATION_TOOL: JsToolDef = {
+  name: 'submit_evaluation',
+  description:
+    'Submit the structured pass/fail evaluation of the screenshot. Always call this exactly once.',
+  parameters: {
+    type: 'object',
+    properties: {
+      passed: {
+        type: 'boolean',
+        description: 'Whether the screenshot meets the expected criteria.',
+      },
+      reason: {
+        type: 'string',
+        description: 'Concise explanation of the decision.',
+      },
+    },
+    required: ['passed', 'reason'],
+  },
+};
 
 async function runAIEvaluation(
   screenshotBuffer: Buffer,
   expectedArray: string[],
-  customPrompt?: string,
-  aiConfig?: AIConfig,
+  customPrompt: string | undefined,
+  aiConfig: AIConfig,
 ): Promise<{ passed: boolean; reason: string }> {
-  if (!aiConfig) {
-    throw new Error('AI configuration is required for AI evaluation mode');
-  }
-
-  const provider = createAIProvider(aiConfig);
-
-  if (!provider.generateVisionCompletion) {
-    throw new Error(
-      `AI provider "${aiConfig.provider}" does not support vision completion. ` +
-        'Please use a provider with vision capabilities (e.g., anthropic, openai) or switch to OCR mode.',
-    );
-  }
+  const model = buildModel(aiConfig);
+  const options = buildCompletionOptions(aiConfig);
 
   const systemPrompt = `You are evaluating a screenshot against expected content or conditions.
-Analyze the image and determine if it matches the criteria.
-
-IMPORTANT: Respond ONLY with a JSON object in this exact format:
-{"passed": true, "reason": "explanation"}
-or
-{"passed": false, "reason": "explanation"}
-
-Do not include any other text, markdown formatting, or explanations outside the JSON object.`;
+Analyze the image and submit your decision by calling the submit_evaluation tool exactly once.`;
 
   const defaultPrompt = `Expected content or conditions:
 ${expectedArray.map((exp) => `- ${exp}`).join('\n')}
 
-Does the screenshot contain all of the expected content or meet the specified conditions?
-Respond with a JSON object containing "passed" (boolean) and "reason" (string explaining your decision).`;
+Does the screenshot contain all of the expected content or meet the specified conditions? Submit your decision via the submit_evaluation tool.`;
 
   const prompt = customPrompt || defaultPrompt;
   const imageBase64 = screenshotBuffer.toString('base64');
-  const imageMimeType = 'image/png';
 
-  const response = await provider.generateVisionCompletion(
-    prompt,
-    imageBase64,
-    imageMimeType,
-    systemPrompt,
+  const wf = new Workflow('ai-evaluation');
+
+  wf.addStep(
+    'evaluate',
+    ['blazen::StartEvent'],
+    async (_event: Record<string, unknown>, _ctx: Context) => {
+      const response = await model.completeWithOptions(
+        [
+          ChatMessage.system(systemPrompt),
+          ChatMessage.userImageBase64(prompt, imageBase64, 'image/png'),
+        ],
+        { ...options, tools: [SUBMIT_EVALUATION_TOOL] },
+      );
+
+      const call = response.toolCalls?.[0];
+      if (!call || call.name !== 'submit_evaluation') {
+        throw new Error('AI did not submit a structured evaluation via tool call.');
+      }
+
+      const parsed = AIEvaluationResponseSchema.parse(call.arguments);
+      return { type: 'blazen::StopEvent', result: parsed };
+    },
   );
 
-  // Extract and validate JSON response
-  let parsedResponse: unknown;
-  try {
-    parsedResponse = extractJSONFromResponse(response);
-  } catch (e) {
-    throw new Error(
-      `Failed to parse AI response: ${e instanceof Error ? e.message : String(e)}. Response: ${response}`,
-    );
-  }
-
-  const validated = AIEvaluationResponseSchema.parse(parsedResponse);
-  return validated;
+  const result = await wf.run({});
+  return result.data as { passed: boolean; reason: string };
 }
 
 export async function evaluate(options: EvaluateOptions): Promise<EvaluateResult> {
-  const expectedArray = Array.isArray(options.expected)
-    ? options.expected
-    : [options.expected];
+  const expectedArray = Array.isArray(options.expected) ? options.expected : [options.expected];
 
-  // Track OCR failure reason for clear error messages
   let ocrFailReason: string | undefined;
 
-  // Mode: OCR or auto (try OCR first)
   if (options.mode === 'ocr' || options.mode === 'auto') {
     try {
       const ocrResult = await runOCR(options.screenshotBuffer);
       const matchResult = matchExpected(ocrResult.text, expectedArray, options.regex);
-
       const ocrPassed = matchResult.allMatched && ocrResult.confidence >= options.confidence;
 
       if (ocrPassed) {
@@ -216,12 +176,11 @@ export async function evaluate(options: EvaluateOptions): Promise<EvaluateResult
         };
       }
 
-      // Build OCR failure reason
-      ocrFailReason = matchResult.missing.length > 0
-        ? `OCR did not find expected content: ${matchResult.missing.join(', ')}`
-        : `OCR confidence (${ocrResult.confidence.toFixed(1)}%) below threshold (${options.confidence}%)`;
+      ocrFailReason =
+        matchResult.missing.length > 0
+          ? `OCR did not find expected content: ${matchResult.missing.join(', ')}`
+          : `OCR confidence (${ocrResult.confidence.toFixed(1)}%) below threshold (${options.confidence}%)`;
 
-      // If OCR mode only, return failure
       if (options.mode === 'ocr') {
         return {
           passed: false,
@@ -232,8 +191,6 @@ export async function evaluate(options: EvaluateOptions): Promise<EvaluateResult
           screenshotPath: options.screenshotPath,
         };
       }
-
-      // Auto mode: OCR failed, will fall through to AI
     } catch (e) {
       ocrFailReason = `OCR failed: ${e instanceof Error ? e.message : String(e)}`;
       if (options.mode === 'ocr') {
@@ -244,17 +201,15 @@ export async function evaluate(options: EvaluateOptions): Promise<EvaluateResult
           screenshotPath: options.screenshotPath,
         };
       }
-      // Auto mode: OCR failed, fall through to AI
     }
   }
 
-  // Mode: AI or auto (fallback from OCR)
   if (options.mode === 'ai' || options.mode === 'auto') {
     if (!options.aiConfig) {
-      // In auto mode, report the OCR failure + no AI config
-      const reason = options.mode === 'auto' && ocrFailReason
-        ? `${ocrFailReason}. No AI provider configured to fall back on`
-        : 'AI evaluation requested but no AI configuration provided';
+      const reason =
+        options.mode === 'auto' && ocrFailReason
+          ? `${ocrFailReason}. No AI provider configured to fall back on`
+          : 'AI evaluation requested but no AI configuration provided';
 
       return {
         passed: false,
@@ -280,11 +235,11 @@ export async function evaluate(options: EvaluateOptions): Promise<EvaluateResult
         screenshotPath: options.screenshotPath,
       };
     } catch (e) {
-      // In auto mode, include what OCR found + why AI failed
       const aiError = e instanceof Error ? e.message : String(e);
-      const reason = options.mode === 'auto' && ocrFailReason
-        ? `${ocrFailReason}. AI fallback also failed: ${aiError}`
-        : `AI evaluation failed: ${aiError}`;
+      const reason =
+        options.mode === 'auto' && ocrFailReason
+          ? `${ocrFailReason}. AI fallback also failed: ${aiError}`
+          : `AI evaluation failed: ${aiError}`;
 
       return {
         passed: false,
@@ -295,7 +250,6 @@ export async function evaluate(options: EvaluateOptions): Promise<EvaluateResult
     }
   }
 
-  // Should never reach here
   return {
     passed: false,
     mode: 'ocr',

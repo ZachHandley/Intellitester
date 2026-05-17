@@ -18,6 +18,16 @@
         "ios"
       ]
     },
+    "variables": {
+      "description": "Workflow-level variables available to all tests",
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
     "config": {
       "description": "Workflow-level configuration that applies to all tests",
       "type": "object",
@@ -45,16 +55,39 @@
               "description": "Run browser in headless mode",
               "type": "boolean"
             },
+            "testSizes": {
+              "description": "Viewport sizes to test (Tailwind breakpoints). Tests run once per size.",
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "xs",
+                  "sm",
+                  "md",
+                  "lg",
+                  "xl"
+                ]
+              }
+            },
             "storageState": {
               "description": "Playwright storageState: file path (string) or inline {cookies, origins} object. Maps to browser.newContext({ storageState }).",
-              "oneOf": [
-                { "type": "string" },
+              "anyOf": [
+                {
+                  "type": "string"
+                },
                 {
                   "type": "object",
                   "properties": {
-                    "cookies": { "type": "array", "items": {} },
-                    "origins": { "type": "array", "items": {} }
-                  }
+                    "cookies": {
+                      "type": "array",
+                      "items": {}
+                    },
+                    "origins": {
+                      "type": "array",
+                      "items": {}
+                    }
+                  },
+                  "additionalProperties": {}
                 }
               ]
             }
@@ -171,8 +204,8 @@
               "additionalProperties": false
             },
             "scanUntracked": {
-              "type": "boolean",
-              "description": "Scan for untracked resources using provider heuristics"
+              "description": "Scan for untracked resources using provider heuristics",
+              "type": "boolean"
             }
           },
           "required": [
@@ -211,6 +244,16 @@
               "type": "integer",
               "exclusiveMinimum": 0,
               "maximum": 9007199254740991
+            },
+            "workdir": {
+              "description": "Working directory for the web server command",
+              "type": "string",
+              "minLength": 1
+            },
+            "cwd": {
+              "description": "Deprecated: use workdir instead",
+              "type": "string",
+              "minLength": 1
             }
           },
           "required": [

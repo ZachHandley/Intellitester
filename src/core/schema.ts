@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SUPPORTED_PROVIDERS } from '../ai/types';
 
 const nonEmptyString = z.string().trim().min(1, 'Value cannot be empty');
 
@@ -448,29 +449,38 @@ const aiSourceSchema = z.object({
   extensions: z.array(z.string()).default(['.vue', '.astro', '.tsx', '.jsx', '.svelte']).describe('File extensions to include in source code analysis'),
 }).optional().describe('Source code directories for AI to analyze when generating tests');
 
-const defaultModelForProvider = (provider: string): string => {
+export const defaultModelForProvider = (provider: string): string => {
   switch (provider) {
     case 'anthropic': return 'claude-haiku-4-5-20251001';
     case 'openrouter': return 'anthropic/claude-haiku-4.5';
     case 'openai': return 'gpt-4o-mini';
+    case 'gemini': return 'gemini-2.5-flash';
     case 'groq': return 'llama-3.1-8b-instant';
+    case 'together': return 'meta-llama/Llama-3.3-70B-Instruct-Turbo';
+    case 'mistral': return 'mistral-small-latest';
+    case 'deepseek': return 'deepseek-chat';
+    case 'fireworks': return 'accounts/fireworks/models/llama-v3p3-70b-instruct';
+    case 'perplexity': return 'sonar';
+    case 'xai': return 'grok-2-latest';
+    case 'cohere': return 'command-r-plus';
+    case 'fal': return 'anthropic/claude-haiku-4.5';
     case 'ollama': return 'llama3.2:3b';
+    case 'lmStudio': return 'local-model';
+    // azure, bedrock, openaiCompat require explicit model — no sensible default
     default: return 'claude-haiku-4-5-20251001';
   }
 };
 
 const aiConfigSchema = z.object({
-  provider: z.enum(['anthropic', 'openai', 'ollama', 'groq', 'openrouter']).describe('AI provider to use for test generation'),
+  provider: z.enum(SUPPORTED_PROVIDERS).describe('AI provider to use for test generation'),
   model: z.string().trim().optional().describe('Model name to use (defaults based on provider if omitted)'),
   apiKey: z.string().trim().optional().describe('API key for the AI provider (supports ${ENV_VAR} syntax)'),
   baseUrl: optionalUrl.describe('Base URL for the AI API (required for Ollama, auto-set for groq/openrouter)'),
   temperature: z.number().min(0).max(2).default(0.2).describe('Temperature for AI generation (0 = deterministic, 2 = very creative)'),
   maxTokens: z.number().int().positive().default(4096).describe('Maximum tokens for AI responses'),
+  providerOptions: z.record(z.string(), z.unknown()).optional().describe('Extra provider-specific options passed verbatim to the Blazen factory (e.g., azure resourceName/deploymentName, bedrock region, fal endpoint, ollama host/port, openaiCompat providerName/defaultModel). Supports ${ENV_VAR} substitution in string values.'),
   source: aiSourceSchema,
-}).transform((val) => ({
-  ...val,
-  model: val.model || defaultModelForProvider(val.provider),
-})).describe('AI configuration for test generation and healing');
+}).describe('AI configuration for test generation and healing');
 
 // Cleanup discovery configuration
 export const cleanupDiscoverSchema = z.object({

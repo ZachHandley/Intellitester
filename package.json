@@ -87,14 +87,11 @@
   "author": "Zach Handley <zachhandley@gmail.com> (https://zachhandley.com)",
   "license": "MIT",
   "dependencies": {
-    "@llamaindex/anthropic": "^0.3.26",
-    "@llamaindex/ollama": "^0.1.23",
-    "@llamaindex/openai": "^0.4.22",
+    "blazen": "^0.5.3",
     "commander": "^14.0.2",
     "dotenv": "^17.2.3",
     "glob": "^13.0.0",
     "libphonenumber-js": "^1.12.33",
-    "llamaindex": "^0.12.1",
     "node-appwrite": "^21.0.0",
     "prompts": "^2.4.2",
     "tesseract.js": "^7.0.0",
@@ -116,6 +113,7 @@
     "eslint-config-prettier": "^10.1.8",
     "prettier": "^3.7.4",
     "tsup": "^8.5.1",
+    "tsx": "^4.22.1",
     "typescript": "^5.9.3",
     "vitest": "^4.0.15"
   },

@@ -14,7 +14,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 
 import { loadIntellitesterConfig, loadTestDefinition, loadWorkflowDefinition, isWorkflowFile, isPipelineFile, loadPipelineDefinition, isWorkflowContent, isPipelineContent } from '../core/loader';
 import { runPipeline } from '../executors/web/pipelineExecutor';
-import type { TestDefinition, Locator } from '../core/types';
+import type { TestDefinition, Locator, Action } from '../core/types';
 import { runWebTest, type BrowserName } from '../executors/web';
 import { runWorkflow } from '../executors/web/workflowExecutor';
 import { generateTest } from '../generator';
@@ -368,6 +368,23 @@ const fileExists = async (filePath: string): Promise<boolean> => {
   } catch {
     return false;
   }
+};
+
+const stepsUseAiEvaluation = (steps: Action[] | undefined): boolean => {
+  if (!steps) return false;
+  for (const step of steps) {
+    if (step.type === 'evaluate') {
+      const mode = step.mode ?? 'auto';
+      if (mode === 'ai' || mode === 'agent' || mode === 'auto') return true;
+    } else if (step.type === 'conditional') {
+      if (stepsUseAiEvaluation(step.then as Action[])) return true;
+      if (step.else && stepsUseAiEvaluation(step.else as Action[])) return true;
+    } else if (step.type === 'waitForBranch') {
+      if (Array.isArray(step.onAppear) && stepsUseAiEvaluation(step.onAppear as Action[])) return true;
+      if (Array.isArray(step.onTimeout) && stepsUseAiEvaluation(step.onTimeout as Action[])) return true;
+    }
+  }
+  return false;
 };
 
 const collectYamlFiles = async (target: string): Promise<string[]> => {
@@ -2169,9 +2186,11 @@ const runTestCommand = async (
     `Running ${path.basename(absoluteTarget)} on web (${browser}${modeFlags.length > 0 ? ', ' + modeFlags.join(', ') : ''})`,
   );
 
-  // Pass aiConfig if interactive mode OR healing is enabled (check both global and test-level config)
+  // Pass aiConfig if interactive mode, healing is enabled, OR any step uses
+  // an AI-needing evaluate mode (ai/agent/auto, or default-unset which is auto).
   const healingEnabled = config?.healing?.enabled === true || test.config?.healing?.enabled === true;
-  const needsAi = interactive || healingEnabled;
+  const hasAiEvalStep = stepsUseAiEvaluation(test.steps);
+  const needsAi = interactive || healingEnabled || hasAiEvalStep;
 
   // Resolve AI config: global takes priority, test-level as fallback
   const resolvedAiConfig = config?.ai ?? test.config?.ai;

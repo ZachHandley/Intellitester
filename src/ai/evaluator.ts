@@ -2,7 +2,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { ChatMessage, Workflow, runAgent } from 'blazen';
-import type { Context, JsToolDef, LlmPayload, ToolOutput } from 'blazen';
+import type { Context, JsToolDef } from 'blazen';
 import type { Page } from 'playwright';
 import { createWorker, type Worker, type RecognizeResult } from 'tesseract.js';
 import { z } from 'zod';
@@ -168,9 +168,7 @@ Does the screenshot contain all of the expected content or meet the specified co
 
 // ---------- Agent (multi-turn tool-using) evaluation ----------
 
-type AgentToolResult =
-  | { kind: 'text'; text: string }
-  | { kind: 'image'; base64: string; mediaType: string; note?: string };
+type AgentToolResult = { kind: 'text'; text: string };
 
 export interface AgentToolContext {
   page: Page;
@@ -188,13 +186,13 @@ export interface CustomToolsModule {
 const TAKE_SCREENSHOT_TOOL: JsToolDef = {
   name: 'take_screenshot',
   description:
-    'Capture a fresh screenshot of the current page state. Use after scrolling, waiting, or any DOM change. Returns the image so you can visually inspect it.',
+    'Capture a fresh screenshot (saved as a test artifact). NOTE: pixels from this call are NOT shown back to you on the next turn — only the initial screenshot in the user message is visible. For verifying content after scrolling/waiting, use accessibility_snapshot or query_dom (those return real readable data).',
   parameters: {
     type: 'object',
     properties: {
       fullPage: {
         type: 'boolean',
-        description: 'Capture full scrollable page (true) or just the current viewport (false). Default: false (viewport only — faster).',
+        description: 'Capture full scrollable page (true) or just the current viewport (false). Default: false.',
       },
       selector: {
         type: 'string',
@@ -301,19 +299,27 @@ function truncate(s: string, limit: number): string {
 async function execTakeScreenshot(args: Record<string, unknown>, page: Page): Promise<AgentToolResult> {
   const fullPage = args.fullPage === true;
   const selector = typeof args.selector === 'string' ? args.selector : undefined;
-  let buf: Buffer;
-  if (selector) {
-    buf = await page.locator(selector).first().screenshot();
-  } else {
-    buf = await page.screenshot({ fullPage });
+  // The model cannot see images returned from tool results in this Blazen
+  // version's runAgent loop (only the initial user-message image is shown).
+  // So we capture the screenshot for the test artifact and return a textual
+  // summary that nudges the model toward DOM/aria verification, which is the
+  // reliable truth source for canvas/<video>/dynamic UI anyway.
+  try {
+    if (selector) {
+      await page.locator(selector).first().screenshot();
+    } else {
+      await page.screenshot({ fullPage });
+    }
+    const url = page.url();
+    const scope = selector ? `selector="${selector}"` : fullPage ? 'fullPage' : 'viewport';
+    return {
+      kind: 'text',
+      text: `Screenshot captured (${scope}) at ${url}. Note: re-screenshots are not surfaced visually in this loop — use accessibility_snapshot or query_dom to verify the contents you'd want to inspect.`,
+    };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { kind: 'text', text: `take_screenshot error: ${msg}` };
   }
-  const url = page.url();
-  return {
-    kind: 'image',
-    base64: buf.toString('base64'),
-    mediaType: 'image/png',
-    note: `Screenshot captured (${selector ? `selector=${selector}` : fullPage ? 'fullPage' : 'viewport'}) at ${url}`,
-  };
 }
 
 async function execScroll(args: Record<string, unknown>, page: Page): Promise<AgentToolResult> {
@@ -456,22 +462,6 @@ async function loadCustomTools(
   return out;
 }
 
-function toolResultToLlmPayload(result: AgentToolResult): LlmPayload {
-  if (result.kind === 'text') {
-    return { kind: 'text', text: result.text };
-  }
-  const parts = [
-    ...(result.note ? [{ partType: 'text', text: result.note }] : []),
-    {
-      partType: 'image',
-      image: {
-        source: { sourceType: 'base64', data: result.base64 },
-        mediaType: result.mediaType,
-      },
-    },
-  ];
-  return { kind: 'parts', parts };
-}
 
 class SubmitEvaluationSignal extends Error {
   constructor(public passed: boolean, public reason: string) {
@@ -507,15 +497,17 @@ async function runAgentEvaluation(
 
   const systemPrompt = `You are auditing a web page to decide whether the user's expected condition holds.
 
-You have tools to investigate before deciding:
-  - take_screenshot: re-capture the page (use after scrolling/waiting)
-  - scroll: bring off-screen content into the viewport
-  - wait: let animations or lazy-loaded UI settle (max 3000ms)
-  - query_dom: read text/visibility/attributes for a CSS selector
-  - accessibility_snapshot: read the accessibility tree — the truth source when pixels are ambiguous (e.g., <video>, <canvas>, dynamic UIs)
-  - submit_evaluation: terminal — call exactly once with { passed, reason } when confident
+The initial screenshot of the page is attached to the user message — that is the ONLY image you can see. Re-screenshots are not shown back to you (they are saved as artifacts only). After scrolling/waiting, verify content by reading the DOM, NOT by re-screenshotting.
 
-The initial screenshot of the page is already attached. If you cannot find the expected content immediately, scroll, wait, or query the DOM before concluding it is missing. Be efficient — investigate, then call submit_evaluation.`;
+Tools:
+  - accessibility_snapshot: returns the ARIA tree (YAML) of a region — the truth source for what is rendered. Use this to confirm structure (lists, regions, roles, accessible names).
+  - query_dom: returns count/visibility/text/attributes for a CSS selector.
+  - scroll: move the page (by pixels, to-bottom/top, or scroll a selector into view).
+  - wait: pause up to 3000ms for animations/lazy loads.
+  - take_screenshot: captures an artifact (you do not see the result image — informational only).
+  - submit_evaluation: terminal — call exactly once with { passed, reason } when confident.
+
+Workflow: examine the initial screenshot. If the expected content isn't in view, scroll to where it should live, then use accessibility_snapshot or query_dom to confirm. Be efficient. Call submit_evaluation once you have enough evidence.`;
 
   const defaultUserPrompt = `Expected content or conditions:
 ${expectedArray.map((exp) => `- ${exp}`).join('\n')}
@@ -532,7 +524,7 @@ Investigate the page using the available tools. When confident, call submit_eval
 
   let submission: { passed: boolean; reason: string } | undefined;
 
-  const toolHandler = async (name: string, rawArgs: unknown): Promise<ToolOutput> => {
+  const toolHandler = async (name: string, rawArgs: unknown): Promise<string> => {
     const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>;
 
     if (name === 'submit_evaluation') {
@@ -549,13 +541,10 @@ Investigate the page using the available tools. When confident, call submit_eval
     } else {
       result = { kind: 'text', text: `Unknown tool: ${name}` };
     }
-
-    return {
-      data: result.kind === 'image'
-        ? { ok: true, note: result.note ?? 'image returned to model' }
-        : { ok: true, text: result.text },
-      llmOverride: toolResultToLlmPayload(result),
-    };
+    // Return a plain string — Blazen auto-wraps to a text tool-result message
+    // the model can read. (Returning structured ToolOutput.llmOverride hits a
+    // serde tag mismatch in the napi binding for this Blazen version.)
+    return result.text;
   };
 
   let iterations = 0;
@@ -568,10 +557,13 @@ Investigate the page using the available tools. When confident, call submit_eval
     });
     iterations = agentResult.iterations;
   } catch (e) {
-    if (!(e instanceof SubmitEvaluationSignal)) {
+    // Blazen's napi runAgent wraps thrown errors from JS tool handlers into
+    // its own GenericFailure error type, so `instanceof SubmitEvaluationSignal`
+    // does not work. Trust the closure: if `submission` was set, the throw
+    // was our terminate signal and we re-raise otherwise.
+    if (!submission) {
       throw e;
     }
-    // submit_evaluation called; submission populated via closure.
   }
 
   if (!submission) {

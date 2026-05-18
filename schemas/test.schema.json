@@ -244,7 +244,7 @@
               ]
             },
             "model": {
-              "description": "Model name to use (defaults based on provider if omitted)",
+              "description": "Model name to use (defaults based on provider if omitted). fal.ai requires the exact model identifier (e.g. `anthropic/claude-sonnet-4.5`, not `anthropic/claude-sonnet-4`) — unknown names silently route through a fallback upstream and may fail on multimodal inputs.",
               "type": "string"
             },
             "apiKey": {
@@ -2074,7 +2074,7 @@
                     "additionalProperties": false
                   },
                   {
-                    "description": "Evaluate page state via screenshot analysis (OCR and/or AI vision)",
+                    "description": "Evaluate page state via screenshot analysis (OCR, one-shot AI vision, or multi-turn agent)",
                     "type": "object",
                     "properties": {
                       "type": {
@@ -2096,11 +2096,12 @@
                         ]
                       },
                       "mode": {
-                        "description": "ocr=OCR only, ai=LLM vision only, auto=OCR first then AI fallback (default: auto)",
+                        "description": "ocr=OCR only, ai=one-shot LLM vision, agent=multi-turn LLM with page-inspection tools, auto=OCR first then AI fallback (default: auto)",
                         "type": "string",
                         "enum": [
                           "ocr",
                           "ai",
+                          "agent",
                           "auto"
                         ]
                       },
@@ -2127,11 +2128,217 @@
                         "type": "number",
                         "minimum": 0,
                         "maximum": 100
+                      },
+                      "maxSteps": {
+                        "description": "Agent mode only: max tool-calling iterations before forcing a verdict (default: 6)",
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20
+                      },
+                      "tools": {
+                        "description": "Agent mode only: path (relative to the test YAML) to a TS/JS module exporting { tools, handler } to extend the agent toolset",
+                        "type": "string"
                       }
                     },
                     "required": [
                       "type",
                       "expected"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "description": "Snapshot an element's bounding box (and optionally computed styles + pixels) into a named slot. Pair with assertElement to compare across interactions.",
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "measureElement"
+                      },
+                      "selector": {
+                        "description": "CSS selector for the element to measure (first match used)",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "name": {
+                        "description": "Slot name — assertElement looks up the snapshot by this key. Measurements are per-test; sharing across tests in a workflow is not supported.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "styles": {
+                        "description": "CSS properties to capture via getComputedStyle (e.g. [\"transform\", \"opacity\"]). Bounding box is always captured.",
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      },
+                      "pixels": {
+                        "description": "If true, also capture an element-scoped PNG via Locator.screenshot() for use with looksLike/looksDifferent comparators (default: false).",
+                        "type": "boolean"
+                      },
+                      "waitBefore": {
+                        "description": "Milliseconds to wait before capturing for visual stability",
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "selector",
+                      "name"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "const": "assertElement"
+                      },
+                      "selector": {
+                        "description": "CSS selector for the element to assert (re-resolved at assert time, first match used)",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "against": {
+                        "description": "Name of a prior measureElement snapshot to compare against. Mutually exclusive with `expected`.",
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "expected": {
+                        "description": "Literal expected values. Mutually exclusive with `against`.",
+                        "type": "object",
+                        "properties": {
+                          "x": {
+                            "type": "number"
+                          },
+                          "y": {
+                            "type": "number"
+                          },
+                          "width": {
+                            "type": "number"
+                          },
+                          "height": {
+                            "type": "number"
+                          },
+                          "styles": {
+                            "description": "Map of CSS property to expected value (computed-style equality).",
+                            "type": "object",
+                            "propertyNames": {
+                              "type": "string"
+                            },
+                            "additionalProperties": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "additionalProperties": false
+                      },
+                      "comparator": {
+                        "description": "equals/withinTolerance compare fields verbatim; moved/grew/shrank check geometric direction vs a snapshot; delta accepts per-field constraint strings; looksLike/looksDifferent run an element-scoped pixel diff against a snapshot captured with pixels: true.",
+                        "type": "string",
+                        "enum": [
+                          "equals",
+                          "moved",
+                          "grew",
+                          "shrank",
+                          "delta",
+                          "withinTolerance",
+                          "looksLike",
+                          "looksDifferent"
+                        ]
+                      },
+                      "axis": {
+                        "description": "Direction qualifier for moved/grew/shrank. Defaults: moved → both (x and y); grew/shrank → both (width and height).",
+                        "type": "string",
+                        "enum": [
+                          "x",
+                          "y",
+                          "width",
+                          "height",
+                          "both"
+                        ]
+                      },
+                      "minDelta": {
+                        "description": "Minimum absolute delta (px) required to count as a change for moved/grew/shrank (default 0.5).",
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "tolerance": {
+                        "description": "Tolerance (px) for equals / withinTolerance (default: equals=0, withinTolerance=1).",
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "delta": {
+                        "description": "For `comparator: delta` — per-field constraint strings, e.g. { x: \">0\", width: \">=4\", height: \"==0\" }. Operators: ==, !=, >, >=, <, <=.",
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "styles": {
+                        "description": "CSS property assertions evaluated via getComputedStyle on the current element.",
+                        "type": "array",
+                        "items": {
+                          "description": "Single CSS-style assertion evaluated via getComputedStyle on the current element.",
+                          "type": "object",
+                          "properties": {
+                            "property": {
+                              "description": "CSS property name (e.g. opacity, transform, background-color)",
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "op": {
+                              "description": "Comparison operator. greaterThan/lessThan parse both sides as numbers.",
+                              "type": "string",
+                              "enum": [
+                                "equals",
+                                "notEquals",
+                                "contains",
+                                "notContains",
+                                "greaterThan",
+                                "lessThan"
+                              ]
+                            },
+                            "value": {
+                              "description": "Expected value (compared against computed style)",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "property",
+                            "op",
+                            "value"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "maxDiffRatio": {
+                        "description": "looksLike/looksDifferent only: maximum proportion of differing pixels before the assertion fails (default 0.01 = 1%).",
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "diffThreshold": {
+                        "description": "looksLike/looksDifferent only: pixelmatch per-pixel sensitivity, smaller is stricter (default 0.1).",
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1
+                      },
+                      "saveDiff": {
+                        "description": "looksLike/looksDifferent only: optional path (relative to test YAML) where the diff overlay PNG is written for debugging.",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "selector",
+                      "comparator"
                     ],
                     "additionalProperties": false
                   }
@@ -3984,7 +4191,7 @@
                               "additionalProperties": false
                             },
                             {
-                              "description": "Evaluate page state via screenshot analysis (OCR and/or AI vision)",
+                              "description": "Evaluate page state via screenshot analysis (OCR, one-shot AI vision, or multi-turn agent)",
                               "type": "object",
                               "properties": {
                                 "type": {
@@ -4006,11 +4213,12 @@
                                   ]
                                 },
                                 "mode": {
-                                  "description": "ocr=OCR only, ai=LLM vision only, auto=OCR first then AI fallback (default: auto)",
+                                  "description": "ocr=OCR only, ai=one-shot LLM vision, agent=multi-turn LLM with page-inspection tools, auto=OCR first then AI fallback (default: auto)",
                                   "type": "string",
                                   "enum": [
                                     "ocr",
                                     "ai",
+                                    "agent",
                                     "auto"
                                   ]
                                 },
@@ -4037,11 +4245,217 @@
                                   "type": "number",
                                   "minimum": 0,
                                   "maximum": 100
+                                },
+                                "maxSteps": {
+                                  "description": "Agent mode only: max tool-calling iterations before forcing a verdict (default: 6)",
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 20
+                                },
+                                "tools": {
+                                  "description": "Agent mode only: path (relative to the test YAML) to a TS/JS module exporting { tools, handler } to extend the agent toolset",
+                                  "type": "string"
                                 }
                               },
                               "required": [
                                 "type",
                                 "expected"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "description": "Snapshot an element's bounding box (and optionally computed styles + pixels) into a named slot. Pair with assertElement to compare across interactions.",
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "measureElement"
+                                },
+                                "selector": {
+                                  "description": "CSS selector for the element to measure (first match used)",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "name": {
+                                  "description": "Slot name — assertElement looks up the snapshot by this key. Measurements are per-test; sharing across tests in a workflow is not supported.",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "styles": {
+                                  "description": "CSS properties to capture via getComputedStyle (e.g. [\"transform\", \"opacity\"]). Bounding box is always captured.",
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "pixels": {
+                                  "description": "If true, also capture an element-scoped PNG via Locator.screenshot() for use with looksLike/looksDifferent comparators (default: false).",
+                                  "type": "boolean"
+                                },
+                                "waitBefore": {
+                                  "description": "Milliseconds to wait before capturing for visual stability",
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "selector",
+                                "name"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "assertElement"
+                                },
+                                "selector": {
+                                  "description": "CSS selector for the element to assert (re-resolved at assert time, first match used)",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "against": {
+                                  "description": "Name of a prior measureElement snapshot to compare against. Mutually exclusive with `expected`.",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "expected": {
+                                  "description": "Literal expected values. Mutually exclusive with `against`.",
+                                  "type": "object",
+                                  "properties": {
+                                    "x": {
+                                      "type": "number"
+                                    },
+                                    "y": {
+                                      "type": "number"
+                                    },
+                                    "width": {
+                                      "type": "number"
+                                    },
+                                    "height": {
+                                      "type": "number"
+                                    },
+                                    "styles": {
+                                      "description": "Map of CSS property to expected value (computed-style equality).",
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "comparator": {
+                                  "description": "equals/withinTolerance compare fields verbatim; moved/grew/shrank check geometric direction vs a snapshot; delta accepts per-field constraint strings; looksLike/looksDifferent run an element-scoped pixel diff against a snapshot captured with pixels: true.",
+                                  "type": "string",
+                                  "enum": [
+                                    "equals",
+                                    "moved",
+                                    "grew",
+                                    "shrank",
+                                    "delta",
+                                    "withinTolerance",
+                                    "looksLike",
+                                    "looksDifferent"
+                                  ]
+                                },
+                                "axis": {
+                                  "description": "Direction qualifier for moved/grew/shrank. Defaults: moved → both (x and y); grew/shrank → both (width and height).",
+                                  "type": "string",
+                                  "enum": [
+                                    "x",
+                                    "y",
+                                    "width",
+                                    "height",
+                                    "both"
+                                  ]
+                                },
+                                "minDelta": {
+                                  "description": "Minimum absolute delta (px) required to count as a change for moved/grew/shrank (default 0.5).",
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "tolerance": {
+                                  "description": "Tolerance (px) for equals / withinTolerance (default: equals=0, withinTolerance=1).",
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "delta": {
+                                  "description": "For `comparator: delta` — per-field constraint strings, e.g. { x: \">0\", width: \">=4\", height: \"==0\" }. Operators: ==, !=, >, >=, <, <=.",
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "styles": {
+                                  "description": "CSS property assertions evaluated via getComputedStyle on the current element.",
+                                  "type": "array",
+                                  "items": {
+                                    "description": "Single CSS-style assertion evaluated via getComputedStyle on the current element.",
+                                    "type": "object",
+                                    "properties": {
+                                      "property": {
+                                        "description": "CSS property name (e.g. opacity, transform, background-color)",
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "op": {
+                                        "description": "Comparison operator. greaterThan/lessThan parse both sides as numbers.",
+                                        "type": "string",
+                                        "enum": [
+                                          "equals",
+                                          "notEquals",
+                                          "contains",
+                                          "notContains",
+                                          "greaterThan",
+                                          "lessThan"
+                                        ]
+                                      },
+                                      "value": {
+                                        "description": "Expected value (compared against computed style)",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "property",
+                                      "op",
+                                      "value"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "maxDiffRatio": {
+                                  "description": "looksLike/looksDifferent only: maximum proportion of differing pixels before the assertion fails (default 0.01 = 1%).",
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1
+                                },
+                                "diffThreshold": {
+                                  "description": "looksLike/looksDifferent only: pixelmatch per-pixel sensitivity, smaller is stricter (default 0.1).",
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1
+                                },
+                                "saveDiff": {
+                                  "description": "looksLike/looksDifferent only: optional path (relative to test YAML) where the diff overlay PNG is written for debugging.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "selector",
+                                "comparator"
                               ],
                               "additionalProperties": false
                             }
@@ -5831,7 +6245,7 @@
                               "additionalProperties": false
                             },
                             {
-                              "description": "Evaluate page state via screenshot analysis (OCR and/or AI vision)",
+                              "description": "Evaluate page state via screenshot analysis (OCR, one-shot AI vision, or multi-turn agent)",
                               "type": "object",
                               "properties": {
                                 "type": {
@@ -5853,11 +6267,12 @@
                                   ]
                                 },
                                 "mode": {
-                                  "description": "ocr=OCR only, ai=LLM vision only, auto=OCR first then AI fallback (default: auto)",
+                                  "description": "ocr=OCR only, ai=one-shot LLM vision, agent=multi-turn LLM with page-inspection tools, auto=OCR first then AI fallback (default: auto)",
                                   "type": "string",
                                   "enum": [
                                     "ocr",
                                     "ai",
+                                    "agent",
                                     "auto"
                                   ]
                                 },
@@ -5884,11 +6299,217 @@
                                   "type": "number",
                                   "minimum": 0,
                                   "maximum": 100
+                                },
+                                "maxSteps": {
+                                  "description": "Agent mode only: max tool-calling iterations before forcing a verdict (default: 6)",
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 20
+                                },
+                                "tools": {
+                                  "description": "Agent mode only: path (relative to the test YAML) to a TS/JS module exporting { tools, handler } to extend the agent toolset",
+                                  "type": "string"
                                 }
                               },
                               "required": [
                                 "type",
                                 "expected"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "description": "Snapshot an element's bounding box (and optionally computed styles + pixels) into a named slot. Pair with assertElement to compare across interactions.",
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "measureElement"
+                                },
+                                "selector": {
+                                  "description": "CSS selector for the element to measure (first match used)",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "name": {
+                                  "description": "Slot name — assertElement looks up the snapshot by this key. Measurements are per-test; sharing across tests in a workflow is not supported.",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "styles": {
+                                  "description": "CSS properties to capture via getComputedStyle (e.g. [\"transform\", \"opacity\"]). Bounding box is always captured.",
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  }
+                                },
+                                "pixels": {
+                                  "description": "If true, also capture an element-scoped PNG via Locator.screenshot() for use with looksLike/looksDifferent comparators (default: false).",
+                                  "type": "boolean"
+                                },
+                                "waitBefore": {
+                                  "description": "Milliseconds to wait before capturing for visual stability",
+                                  "type": "integer",
+                                  "minimum": 0,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "selector",
+                                "name"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string",
+                                  "const": "assertElement"
+                                },
+                                "selector": {
+                                  "description": "CSS selector for the element to assert (re-resolved at assert time, first match used)",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "against": {
+                                  "description": "Name of a prior measureElement snapshot to compare against. Mutually exclusive with `expected`.",
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "expected": {
+                                  "description": "Literal expected values. Mutually exclusive with `against`.",
+                                  "type": "object",
+                                  "properties": {
+                                    "x": {
+                                      "type": "number"
+                                    },
+                                    "y": {
+                                      "type": "number"
+                                    },
+                                    "width": {
+                                      "type": "number"
+                                    },
+                                    "height": {
+                                      "type": "number"
+                                    },
+                                    "styles": {
+                                      "description": "Map of CSS property to expected value (computed-style equality).",
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  },
+                                  "additionalProperties": false
+                                },
+                                "comparator": {
+                                  "description": "equals/withinTolerance compare fields verbatim; moved/grew/shrank check geometric direction vs a snapshot; delta accepts per-field constraint strings; looksLike/looksDifferent run an element-scoped pixel diff against a snapshot captured with pixels: true.",
+                                  "type": "string",
+                                  "enum": [
+                                    "equals",
+                                    "moved",
+                                    "grew",
+                                    "shrank",
+                                    "delta",
+                                    "withinTolerance",
+                                    "looksLike",
+                                    "looksDifferent"
+                                  ]
+                                },
+                                "axis": {
+                                  "description": "Direction qualifier for moved/grew/shrank. Defaults: moved → both (x and y); grew/shrank → both (width and height).",
+                                  "type": "string",
+                                  "enum": [
+                                    "x",
+                                    "y",
+                                    "width",
+                                    "height",
+                                    "both"
+                                  ]
+                                },
+                                "minDelta": {
+                                  "description": "Minimum absolute delta (px) required to count as a change for moved/grew/shrank (default 0.5).",
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "tolerance": {
+                                  "description": "Tolerance (px) for equals / withinTolerance (default: equals=0, withinTolerance=1).",
+                                  "type": "number",
+                                  "minimum": 0
+                                },
+                                "delta": {
+                                  "description": "For `comparator: delta` — per-field constraint strings, e.g. { x: \">0\", width: \">=4\", height: \"==0\" }. Operators: ==, !=, >, >=, <, <=.",
+                                  "type": "object",
+                                  "propertyNames": {
+                                    "type": "string"
+                                  },
+                                  "additionalProperties": {
+                                    "type": "string"
+                                  }
+                                },
+                                "styles": {
+                                  "description": "CSS property assertions evaluated via getComputedStyle on the current element.",
+                                  "type": "array",
+                                  "items": {
+                                    "description": "Single CSS-style assertion evaluated via getComputedStyle on the current element.",
+                                    "type": "object",
+                                    "properties": {
+                                      "property": {
+                                        "description": "CSS property name (e.g. opacity, transform, background-color)",
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "op": {
+                                        "description": "Comparison operator. greaterThan/lessThan parse both sides as numbers.",
+                                        "type": "string",
+                                        "enum": [
+                                          "equals",
+                                          "notEquals",
+                                          "contains",
+                                          "notContains",
+                                          "greaterThan",
+                                          "lessThan"
+                                        ]
+                                      },
+                                      "value": {
+                                        "description": "Expected value (compared against computed style)",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": [
+                                      "property",
+                                      "op",
+                                      "value"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                },
+                                "maxDiffRatio": {
+                                  "description": "looksLike/looksDifferent only: maximum proportion of differing pixels before the assertion fails (default 0.01 = 1%).",
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1
+                                },
+                                "diffThreshold": {
+                                  "description": "looksLike/looksDifferent only: pixelmatch per-pixel sensitivity, smaller is stricter (default 0.1).",
+                                  "type": "number",
+                                  "minimum": 0,
+                                  "maximum": 1
+                                },
+                                "saveDiff": {
+                                  "description": "looksLike/looksDifferent only: optional path (relative to test YAML) where the diff overlay PNG is written for debugging.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "type",
+                                "selector",
+                                "comparator"
                               ],
                               "additionalProperties": false
                             }
@@ -7781,7 +8402,7 @@
                                   "additionalProperties": false
                                 },
                                 {
-                                  "description": "Evaluate page state via screenshot analysis (OCR and/or AI vision)",
+                                  "description": "Evaluate page state via screenshot analysis (OCR, one-shot AI vision, or multi-turn agent)",
                                   "type": "object",
                                   "properties": {
                                     "type": {
@@ -7803,11 +8424,12 @@
                                       ]
                                     },
                                     "mode": {
-                                      "description": "ocr=OCR only, ai=LLM vision only, auto=OCR first then AI fallback (default: auto)",
+                                      "description": "ocr=OCR only, ai=one-shot LLM vision, agent=multi-turn LLM with page-inspection tools, auto=OCR first then AI fallback (default: auto)",
                                       "type": "string",
                                       "enum": [
                                         "ocr",
                                         "ai",
+                                        "agent",
                                         "auto"
                                       ]
                                     },
@@ -7834,11 +8456,217 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 100
+                                    },
+                                    "maxSteps": {
+                                      "description": "Agent mode only: max tool-calling iterations before forcing a verdict (default: 6)",
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 20
+                                    },
+                                    "tools": {
+                                      "description": "Agent mode only: path (relative to the test YAML) to a TS/JS module exporting { tools, handler } to extend the agent toolset",
+                                      "type": "string"
                                     }
                                   },
                                   "required": [
                                     "type",
                                     "expected"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "description": "Snapshot an element's bounding box (and optionally computed styles + pixels) into a named slot. Pair with assertElement to compare across interactions.",
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "measureElement"
+                                    },
+                                    "selector": {
+                                      "description": "CSS selector for the element to measure (first match used)",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "name": {
+                                      "description": "Slot name — assertElement looks up the snapshot by this key. Measurements are per-test; sharing across tests in a workflow is not supported.",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "styles": {
+                                      "description": "CSS properties to capture via getComputedStyle (e.g. [\"transform\", \"opacity\"]). Bounding box is always captured.",
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "pixels": {
+                                      "description": "If true, also capture an element-scoped PNG via Locator.screenshot() for use with looksLike/looksDifferent comparators (default: false).",
+                                      "type": "boolean"
+                                    },
+                                    "waitBefore": {
+                                      "description": "Milliseconds to wait before capturing for visual stability",
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "selector",
+                                    "name"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "assertElement"
+                                    },
+                                    "selector": {
+                                      "description": "CSS selector for the element to assert (re-resolved at assert time, first match used)",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "against": {
+                                      "description": "Name of a prior measureElement snapshot to compare against. Mutually exclusive with `expected`.",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "expected": {
+                                      "description": "Literal expected values. Mutually exclusive with `against`.",
+                                      "type": "object",
+                                      "properties": {
+                                        "x": {
+                                          "type": "number"
+                                        },
+                                        "y": {
+                                          "type": "number"
+                                        },
+                                        "width": {
+                                          "type": "number"
+                                        },
+                                        "height": {
+                                          "type": "number"
+                                        },
+                                        "styles": {
+                                          "description": "Map of CSS property to expected value (computed-style equality).",
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "comparator": {
+                                      "description": "equals/withinTolerance compare fields verbatim; moved/grew/shrank check geometric direction vs a snapshot; delta accepts per-field constraint strings; looksLike/looksDifferent run an element-scoped pixel diff against a snapshot captured with pixels: true.",
+                                      "type": "string",
+                                      "enum": [
+                                        "equals",
+                                        "moved",
+                                        "grew",
+                                        "shrank",
+                                        "delta",
+                                        "withinTolerance",
+                                        "looksLike",
+                                        "looksDifferent"
+                                      ]
+                                    },
+                                    "axis": {
+                                      "description": "Direction qualifier for moved/grew/shrank. Defaults: moved → both (x and y); grew/shrank → both (width and height).",
+                                      "type": "string",
+                                      "enum": [
+                                        "x",
+                                        "y",
+                                        "width",
+                                        "height",
+                                        "both"
+                                      ]
+                                    },
+                                    "minDelta": {
+                                      "description": "Minimum absolute delta (px) required to count as a change for moved/grew/shrank (default 0.5).",
+                                      "type": "number",
+                                      "minimum": 0
+                                    },
+                                    "tolerance": {
+                                      "description": "Tolerance (px) for equals / withinTolerance (default: equals=0, withinTolerance=1).",
+                                      "type": "number",
+                                      "minimum": 0
+                                    },
+                                    "delta": {
+                                      "description": "For `comparator: delta` — per-field constraint strings, e.g. { x: \">0\", width: \">=4\", height: \"==0\" }. Operators: ==, !=, >, >=, <, <=.",
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "styles": {
+                                      "description": "CSS property assertions evaluated via getComputedStyle on the current element.",
+                                      "type": "array",
+                                      "items": {
+                                        "description": "Single CSS-style assertion evaluated via getComputedStyle on the current element.",
+                                        "type": "object",
+                                        "properties": {
+                                          "property": {
+                                            "description": "CSS property name (e.g. opacity, transform, background-color)",
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "op": {
+                                            "description": "Comparison operator. greaterThan/lessThan parse both sides as numbers.",
+                                            "type": "string",
+                                            "enum": [
+                                              "equals",
+                                              "notEquals",
+                                              "contains",
+                                              "notContains",
+                                              "greaterThan",
+                                              "lessThan"
+                                            ]
+                                          },
+                                          "value": {
+                                            "description": "Expected value (compared against computed style)",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "property",
+                                          "op",
+                                          "value"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "maxDiffRatio": {
+                                      "description": "looksLike/looksDifferent only: maximum proportion of differing pixels before the assertion fails (default 0.01 = 1%).",
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "diffThreshold": {
+                                      "description": "looksLike/looksDifferent only: pixelmatch per-pixel sensitivity, smaller is stricter (default 0.1).",
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "saveDiff": {
+                                      "description": "looksLike/looksDifferent only: optional path (relative to test YAML) where the diff overlay PNG is written for debugging.",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "selector",
+                                    "comparator"
                                   ],
                                   "additionalProperties": false
                                 }
@@ -9656,7 +10484,7 @@
                                   "additionalProperties": false
                                 },
                                 {
-                                  "description": "Evaluate page state via screenshot analysis (OCR and/or AI vision)",
+                                  "description": "Evaluate page state via screenshot analysis (OCR, one-shot AI vision, or multi-turn agent)",
                                   "type": "object",
                                   "properties": {
                                     "type": {
@@ -9678,11 +10506,12 @@
                                       ]
                                     },
                                     "mode": {
-                                      "description": "ocr=OCR only, ai=LLM vision only, auto=OCR first then AI fallback (default: auto)",
+                                      "description": "ocr=OCR only, ai=one-shot LLM vision, agent=multi-turn LLM with page-inspection tools, auto=OCR first then AI fallback (default: auto)",
                                       "type": "string",
                                       "enum": [
                                         "ocr",
                                         "ai",
+                                        "agent",
                                         "auto"
                                       ]
                                     },
@@ -9709,11 +10538,217 @@
                                       "type": "number",
                                       "minimum": 0,
                                       "maximum": 100
+                                    },
+                                    "maxSteps": {
+                                      "description": "Agent mode only: max tool-calling iterations before forcing a verdict (default: 6)",
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 20
+                                    },
+                                    "tools": {
+                                      "description": "Agent mode only: path (relative to the test YAML) to a TS/JS module exporting { tools, handler } to extend the agent toolset",
+                                      "type": "string"
                                     }
                                   },
                                   "required": [
                                     "type",
                                     "expected"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "description": "Snapshot an element's bounding box (and optionally computed styles + pixels) into a named slot. Pair with assertElement to compare across interactions.",
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "measureElement"
+                                    },
+                                    "selector": {
+                                      "description": "CSS selector for the element to measure (first match used)",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "name": {
+                                      "description": "Slot name — assertElement looks up the snapshot by this key. Measurements are per-test; sharing across tests in a workflow is not supported.",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "styles": {
+                                      "description": "CSS properties to capture via getComputedStyle (e.g. [\"transform\", \"opacity\"]). Bounding box is always captured.",
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      }
+                                    },
+                                    "pixels": {
+                                      "description": "If true, also capture an element-scoped PNG via Locator.screenshot() for use with looksLike/looksDifferent comparators (default: false).",
+                                      "type": "boolean"
+                                    },
+                                    "waitBefore": {
+                                      "description": "Milliseconds to wait before capturing for visual stability",
+                                      "type": "integer",
+                                      "minimum": 0,
+                                      "maximum": 9007199254740991
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "selector",
+                                    "name"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "type": {
+                                      "type": "string",
+                                      "const": "assertElement"
+                                    },
+                                    "selector": {
+                                      "description": "CSS selector for the element to assert (re-resolved at assert time, first match used)",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "against": {
+                                      "description": "Name of a prior measureElement snapshot to compare against. Mutually exclusive with `expected`.",
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "expected": {
+                                      "description": "Literal expected values. Mutually exclusive with `against`.",
+                                      "type": "object",
+                                      "properties": {
+                                        "x": {
+                                          "type": "number"
+                                        },
+                                        "y": {
+                                          "type": "number"
+                                        },
+                                        "width": {
+                                          "type": "number"
+                                        },
+                                        "height": {
+                                          "type": "number"
+                                        },
+                                        "styles": {
+                                          "description": "Map of CSS property to expected value (computed-style equality).",
+                                          "type": "object",
+                                          "propertyNames": {
+                                            "type": "string"
+                                          },
+                                          "additionalProperties": {
+                                            "type": "string"
+                                          }
+                                        }
+                                      },
+                                      "additionalProperties": false
+                                    },
+                                    "comparator": {
+                                      "description": "equals/withinTolerance compare fields verbatim; moved/grew/shrank check geometric direction vs a snapshot; delta accepts per-field constraint strings; looksLike/looksDifferent run an element-scoped pixel diff against a snapshot captured with pixels: true.",
+                                      "type": "string",
+                                      "enum": [
+                                        "equals",
+                                        "moved",
+                                        "grew",
+                                        "shrank",
+                                        "delta",
+                                        "withinTolerance",
+                                        "looksLike",
+                                        "looksDifferent"
+                                      ]
+                                    },
+                                    "axis": {
+                                      "description": "Direction qualifier for moved/grew/shrank. Defaults: moved → both (x and y); grew/shrank → both (width and height).",
+                                      "type": "string",
+                                      "enum": [
+                                        "x",
+                                        "y",
+                                        "width",
+                                        "height",
+                                        "both"
+                                      ]
+                                    },
+                                    "minDelta": {
+                                      "description": "Minimum absolute delta (px) required to count as a change for moved/grew/shrank (default 0.5).",
+                                      "type": "number",
+                                      "minimum": 0
+                                    },
+                                    "tolerance": {
+                                      "description": "Tolerance (px) for equals / withinTolerance (default: equals=0, withinTolerance=1).",
+                                      "type": "number",
+                                      "minimum": 0
+                                    },
+                                    "delta": {
+                                      "description": "For `comparator: delta` — per-field constraint strings, e.g. { x: \">0\", width: \">=4\", height: \"==0\" }. Operators: ==, !=, >, >=, <, <=.",
+                                      "type": "object",
+                                      "propertyNames": {
+                                        "type": "string"
+                                      },
+                                      "additionalProperties": {
+                                        "type": "string"
+                                      }
+                                    },
+                                    "styles": {
+                                      "description": "CSS property assertions evaluated via getComputedStyle on the current element.",
+                                      "type": "array",
+                                      "items": {
+                                        "description": "Single CSS-style assertion evaluated via getComputedStyle on the current element.",
+                                        "type": "object",
+                                        "properties": {
+                                          "property": {
+                                            "description": "CSS property name (e.g. opacity, transform, background-color)",
+                                            "type": "string",
+                                            "minLength": 1
+                                          },
+                                          "op": {
+                                            "description": "Comparison operator. greaterThan/lessThan parse both sides as numbers.",
+                                            "type": "string",
+                                            "enum": [
+                                              "equals",
+                                              "notEquals",
+                                              "contains",
+                                              "notContains",
+                                              "greaterThan",
+                                              "lessThan"
+                                            ]
+                                          },
+                                          "value": {
+                                            "description": "Expected value (compared against computed style)",
+                                            "type": "string"
+                                          }
+                                        },
+                                        "required": [
+                                          "property",
+                                          "op",
+                                          "value"
+                                        ],
+                                        "additionalProperties": false
+                                      }
+                                    },
+                                    "maxDiffRatio": {
+                                      "description": "looksLike/looksDifferent only: maximum proportion of differing pixels before the assertion fails (default 0.01 = 1%).",
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "diffThreshold": {
+                                      "description": "looksLike/looksDifferent only: pixelmatch per-pixel sensitivity, smaller is stricter (default 0.1).",
+                                      "type": "number",
+                                      "minimum": 0,
+                                      "maximum": 1
+                                    },
+                                    "saveDiff": {
+                                      "description": "looksLike/looksDifferent only: optional path (relative to test YAML) where the diff overlay PNG is written for debugging.",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "type",
+                                    "selector",
+                                    "comparator"
                                   ],
                                   "additionalProperties": false
                                 }

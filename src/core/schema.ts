@@ -347,6 +347,99 @@ const expectResponseActionSchema = z.object({
     .describe('Max wait in ms for a matching response (default 5000).'),
 }).describe('Assert that a network response matching the given URL/status/headers was seen since `since`.');
 
+const elementStyleAssertionSchema = z.object({
+  property: nonEmptyString.describe('CSS property name (e.g. opacity, transform, background-color)'),
+  op: z.enum(['equals', 'notEquals', 'contains', 'notContains', 'greaterThan', 'lessThan'])
+    .describe('Comparison operator. greaterThan/lessThan parse both sides as numbers.'),
+  value: z.string().describe('Expected value (compared against computed style)'),
+}).describe('Single CSS-style assertion evaluated via getComputedStyle on the current element.');
+
+const measureElementActionSchema = z.object({
+  type: z.literal('measureElement'),
+  selector: nonEmptyString.describe('CSS selector for the element to measure (first match used)'),
+  name: nonEmptyString.describe('Slot name — assertElement looks up the snapshot by this key. Measurements are per-test; sharing across tests in a workflow is not supported.'),
+  styles: z.array(nonEmptyString).optional()
+    .describe('CSS properties to capture via getComputedStyle (e.g. ["transform", "opacity"]). Bounding box is always captured.'),
+  pixels: z.boolean().optional()
+    .describe('If true, also capture an element-scoped PNG via Locator.screenshot() for use with looksLike/looksDifferent comparators (default: false).'),
+  waitBefore: z.number().int().nonnegative().optional()
+    .describe('Milliseconds to wait before capturing for visual stability'),
+}).describe('Snapshot an element\'s bounding box (and optionally computed styles + pixels) into a named slot. Pair with assertElement to compare across interactions.');
+
+const assertElementExpectedSchema = z.object({
+  x: z.number().optional(),
+  y: z.number().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  styles: z.record(z.string(), z.string()).optional()
+    .describe('Map of CSS property to expected value (computed-style equality).'),
+}).describe('Literal expected values to compare against (mutually exclusive with `against`).');
+
+const assertElementActionSchema = z.object({
+  type: z.literal('assertElement'),
+  selector: nonEmptyString.describe('CSS selector for the element to assert (re-resolved at assert time, first match used)'),
+  against: z.string().trim().min(1).optional()
+    .describe('Name of a prior measureElement snapshot to compare against. Mutually exclusive with `expected`.'),
+  expected: assertElementExpectedSchema.optional()
+    .describe('Literal expected values. Mutually exclusive with `against`.'),
+  comparator: z.enum(['equals', 'moved', 'grew', 'shrank', 'delta', 'withinTolerance', 'looksLike', 'looksDifferent'])
+    .describe('equals/withinTolerance compare fields verbatim; moved/grew/shrank check geometric direction vs a snapshot; delta accepts per-field constraint strings; looksLike/looksDifferent run an element-scoped pixel diff against a snapshot captured with pixels: true.'),
+  axis: z.enum(['x', 'y', 'width', 'height', 'both']).optional()
+    .describe('Direction qualifier for moved/grew/shrank. Defaults: moved → both (x and y); grew/shrank → both (width and height).'),
+  minDelta: z.number().nonnegative().optional()
+    .describe('Minimum absolute delta (px) required to count as a change for moved/grew/shrank (default 0.5).'),
+  tolerance: z.number().nonnegative().optional()
+    .describe('Tolerance (px) for equals / withinTolerance (default: equals=0, withinTolerance=1).'),
+  delta: z.record(z.string(), z.string()).optional()
+    .describe('For `comparator: delta` — per-field constraint strings, e.g. { x: ">0", width: ">=4", height: "==0" }. Operators: ==, !=, >, >=, <, <=.'),
+  styles: z.array(elementStyleAssertionSchema).optional()
+    .describe('CSS property assertions evaluated via getComputedStyle on the current element.'),
+  maxDiffRatio: z.number().min(0).max(1).optional()
+    .describe('looksLike/looksDifferent only: maximum proportion of differing pixels before the assertion fails (default 0.01 = 1%).'),
+  diffThreshold: z.number().min(0).max(1).optional()
+    .describe('looksLike/looksDifferent only: pixelmatch per-pixel sensitivity, smaller is stricter (default 0.1).'),
+  saveDiff: z.string().optional()
+    .describe('looksLike/looksDifferent only: optional path (relative to test YAML) where the diff overlay PNG is written for debugging.'),
+}).describe('Compare an element\'s current state against a named measureElement snapshot or literal expected values.')
+  .superRefine((a, ctx) => {
+    const hasAgainst = typeof a.against === 'string' && a.against.length > 0;
+    const hasExpected = a.expected !== undefined;
+    if (hasAgainst === hasExpected) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'assertElement requires exactly one of `against` (snapshot name) or `expected` (literal).',
+      });
+    }
+    if (a.comparator === 'delta' && !hasAgainst) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'comparator: delta requires `against` (must reference a measureElement snapshot).',
+      });
+    }
+    if (a.comparator === 'delta' && !a.delta) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'comparator: delta requires a `delta` field with per-field constraints (e.g. { x: ">0" }).',
+      });
+    }
+    if ((a.comparator === 'looksLike' || a.comparator === 'looksDifferent') && !hasAgainst) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `comparator: ${a.comparator} requires \`against\` (must reference a measureElement snapshot with pixels: true).`,
+      });
+    }
+    if (a.axis !== undefined) {
+      const movedAxis = ['x', 'y', 'both'];
+      const sizeAxis = ['width', 'height', 'both'];
+      if (a.comparator === 'moved' && !movedAxis.includes(a.axis)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'axis for comparator: moved must be x, y, or both.' });
+      }
+      if ((a.comparator === 'grew' || a.comparator === 'shrank') && !sizeAxis.includes(a.axis)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: `axis for comparator: ${a.comparator} must be width, height, or both.` });
+      }
+    }
+  });
+
 // Base action schema without conditional (used for nested steps in conditional)
 const BaseActionSchema = z.discriminatedUnion('type', [
   navigateActionSchema,
@@ -379,6 +472,8 @@ const BaseActionSchema = z.discriminatedUnion('type', [
   logActionSchema,
   failActionSchema,
   evaluateActionSchema,
+  measureElementActionSchema,
+  assertElementActionSchema,
 ]);
 
 const TrackableBaseActionSchema = z.intersection(BaseActionSchema, trackableSchema);

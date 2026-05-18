@@ -54,7 +54,7 @@
           ]
         },
         "model": {
-          "description": "Model name to use (defaults based on provider if omitted)",
+          "description": "Model name to use (defaults based on provider if omitted). fal.ai requires the exact model identifier (e.g. `anthropic/claude-sonnet-4.5`, not `anthropic/claude-sonnet-4`) — unknown names silently route through a fallback upstream and may fail on multimodal inputs.",
           "type": "string"
         },
         "apiKey": {

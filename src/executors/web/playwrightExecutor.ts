@@ -308,6 +308,29 @@ async function ensureScreenshotDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
 }
 
+function evaluateStyleAssertion(
+  actual: string,
+  op: 'equals' | 'notEquals' | 'contains' | 'notContains' | 'greaterThan' | 'lessThan',
+  expected: string,
+): boolean {
+  switch (op) {
+    case 'equals': return actual === expected;
+    case 'notEquals': return actual !== expected;
+    case 'contains': return actual.includes(expected);
+    case 'notContains': return !actual.includes(expected);
+    case 'greaterThan': {
+      const a = parseFloat(actual);
+      const e = parseFloat(expected);
+      return Number.isFinite(a) && Number.isFinite(e) && a > e;
+    }
+    case 'lessThan': {
+      const a = parseFloat(actual);
+      const e = parseFloat(expected);
+      return Number.isFinite(a) && Number.isFinite(e) && a < e;
+    }
+  }
+}
+
 const runNavigate = async (
   page: Page,
   value: string,
@@ -522,6 +545,19 @@ export interface ActionExtras {
   screenshotPath?: string;
 }
 
+/**
+ * Snapshot of an element's measurable state captured by `measureElement`.
+ * Lives in a per-test `Map` keyed by the user-supplied `name`.
+ */
+export interface ElementMeasurement {
+  /** Bounding box at capture time. Always present (measureElement throws if boundingBox() returned null). */
+  box: { x: number; y: number; width: number; height: number };
+  /** Captured computed-style values, keyed by CSS property name. */
+  styles: Record<string, string>;
+  /** Element-scoped PNG buffer if `pixels: true` was set. Required for looksLike/looksDifferent comparators. */
+  pixels?: Buffer;
+}
+
 export interface ExecuteActionOptions {
   baseUrl?: string;
   context: ExecutionContext;
@@ -542,6 +578,8 @@ export interface ExecuteActionOptions {
   stepStartTs?: number;
   /** When testing multiple viewport sizes, this is appended to screenshot filenames (e.g. "xl"). Test-runner only. */
   screenshotSizeSuffix?: string;
+  /** Per-test slot map shared by measureElement (writes) and assertElement (reads). Runner creates a fresh Map per test. */
+  measurements?: Map<string, ElementMeasurement>;
 }
 
 export async function executeActionWithRetry(
@@ -550,7 +588,7 @@ export async function executeActionWithRetry(
   index: number,
   options: ExecuteActionOptions,
 ): Promise<ActionExtras> {
-  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing, testFilePath, responseLog, stepStartTs, screenshotSizeSuffix } = options;
+  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing, testFilePath, responseLog, stepStartTs, screenshotSizeSuffix, measurements } = options;
   const extras: ActionExtras = {};
 
   const buildTrackPayload = (stepExtras?: Record<string, unknown>): IntegrationTrackedResource | null => {
@@ -1420,6 +1458,292 @@ export async function executeActionWithRetry(
           }
           break;
         }
+        case 'measureElement': {
+          const meAction = action as Extract<Action, { type: 'measureElement' }>;
+          if (!measurements) {
+            throw new Error('measureElement requires a measurements map in ExecuteActionOptions (executor wiring issue).');
+          }
+          if (meAction.waitBefore && meAction.waitBefore > 0) {
+            await page.waitForTimeout(meAction.waitBefore);
+          }
+          const locator = page.locator(meAction.selector).first();
+          const box = await locator.boundingBox();
+          if (!box) {
+            throw new Error(
+              `measureElement "${meAction.name}": locator "${meAction.selector}" returned no bounding box ` +
+              `(element detached, off-screen, or display:none).`,
+            );
+          }
+          const styleValues: Record<string, string> = {};
+          if (meAction.styles && meAction.styles.length > 0) {
+            for (const prop of meAction.styles) {
+              styleValues[prop] = await locator.evaluate(
+                (el, p) => window.getComputedStyle(el).getPropertyValue(p),
+                prop,
+              );
+            }
+          }
+          let pixels: Buffer | undefined;
+          if (meAction.pixels) {
+            pixels = await locator.screenshot();
+          }
+          measurements.set(meAction.name, { box, styles: styleValues, pixels });
+          const summary = `measureElement "${meAction.name}": box=${box.width.toFixed(1)}x${box.height.toFixed(1)}@(${box.x.toFixed(1)},${box.y.toFixed(1)})${
+            Object.keys(styleValues).length ? ` styles={${Object.entries(styleValues).map(([k, v]) => `${k}:${v}`).join(', ')}}` : ''
+          }${pixels ? ` pixels=${pixels.byteLength}B` : ''}`;
+          if (debugMode) {
+            console.log(`[DEBUG] ${summary}`);
+          }
+          extras.logOutput = summary;
+          break;
+        }
+        case 'assertElement': {
+          const aeAction = action as Extract<Action, { type: 'assertElement' }>;
+          if (!measurements) {
+            throw new Error('assertElement requires a measurements map in ExecuteActionOptions (executor wiring issue).');
+          }
+
+          const locator = page.locator(aeAction.selector).first();
+          const currentBox = await locator.boundingBox();
+          if (!currentBox) {
+            throw new Error(
+              `assertElement: locator "${aeAction.selector}" returned no bounding box ` +
+              `(element detached, off-screen, or display:none).`,
+            );
+          }
+
+          let snapshot: ElementMeasurement | undefined;
+          let expectedBox: Partial<{ x: number; y: number; width: number; height: number }> = {};
+          let expectedStyles: Record<string, string> = {};
+          if (aeAction.against) {
+            snapshot = measurements.get(aeAction.against);
+            if (!snapshot) {
+              throw new Error(
+                `assertElement: no measurement found for name "${aeAction.against}". ` +
+                `Available: ${[...measurements.keys()].join(', ') || '<none>'}.`,
+              );
+            }
+            expectedBox = snapshot.box;
+            expectedStyles = snapshot.styles;
+          } else if (aeAction.expected) {
+            expectedBox = aeAction.expected;
+            expectedStyles = aeAction.expected.styles ?? {};
+          }
+
+          const dx = currentBox.x - (expectedBox.x ?? currentBox.x);
+          const dy = currentBox.y - (expectedBox.y ?? currentBox.y);
+          const dw = currentBox.width - (expectedBox.width ?? currentBox.width);
+          const dh = currentBox.height - (expectedBox.height ?? currentBox.height);
+
+          const fmtBox = (b: typeof currentBox) => `${b.width.toFixed(1)}x${b.height.toFixed(1)}@(${b.x.toFixed(1)},${b.y.toFixed(1)})`;
+          const ctxLine = aeAction.against
+            ? `against "${aeAction.against}"=${fmtBox(snapshot!.box)}, current=${fmtBox(currentBox)}`
+            : `against expected=${JSON.stringify(expectedBox)}, current=${fmtBox(currentBox)}`;
+
+          switch (aeAction.comparator) {
+            case 'equals': {
+              const tol = aeAction.tolerance ?? 0;
+              const fail = (label: string, actual: number, expected: number | undefined) =>
+                expected !== undefined && Math.abs(actual - expected) > tol;
+              if (
+                fail('x', currentBox.x, expectedBox.x) ||
+                fail('y', currentBox.y, expectedBox.y) ||
+                fail('width', currentBox.width, expectedBox.width) ||
+                fail('height', currentBox.height, expectedBox.height)
+              ) {
+                throw new Error(`assertElement equals failed (tolerance=${tol}px): ${ctxLine}`);
+              }
+              break;
+            }
+            case 'withinTolerance': {
+              const tol = aeAction.tolerance ?? 1;
+              const fail = (actual: number, expected: number | undefined) =>
+                expected !== undefined && Math.abs(actual - expected) > tol;
+              if (
+                fail(currentBox.x, expectedBox.x) ||
+                fail(currentBox.y, expectedBox.y) ||
+                fail(currentBox.width, expectedBox.width) ||
+                fail(currentBox.height, expectedBox.height)
+              ) {
+                throw new Error(`assertElement withinTolerance failed (±${tol}px): ${ctxLine}`);
+              }
+              break;
+            }
+            case 'moved': {
+              const minD = aeAction.minDelta ?? 0.5;
+              const axis = aeAction.axis ?? 'both';
+              const movedX = Math.abs(dx) >= minD;
+              const movedY = Math.abs(dy) >= minD;
+              const ok = axis === 'x' ? movedX : axis === 'y' ? movedY : (movedX || movedY);
+              if (!ok) {
+                throw new Error(`assertElement moved failed (axis=${axis}, minDelta=${minD}px, dx=${dx.toFixed(2)}, dy=${dy.toFixed(2)}): ${ctxLine}`);
+              }
+              break;
+            }
+            case 'grew': {
+              const minD = aeAction.minDelta ?? 0.5;
+              const axis = aeAction.axis ?? 'both';
+              const grewW = dw >= minD;
+              const grewH = dh >= minD;
+              const ok = axis === 'width' ? grewW : axis === 'height' ? grewH : (grewW || grewH);
+              if (!ok) {
+                throw new Error(`assertElement grew failed (axis=${axis}, minDelta=${minD}px, dw=${dw.toFixed(2)}, dh=${dh.toFixed(2)}): ${ctxLine}`);
+              }
+              break;
+            }
+            case 'shrank': {
+              const minD = aeAction.minDelta ?? 0.5;
+              const axis = aeAction.axis ?? 'both';
+              const shrankW = dw <= -minD;
+              const shrankH = dh <= -minD;
+              const ok = axis === 'width' ? shrankW : axis === 'height' ? shrankH : (shrankW || shrankH);
+              if (!ok) {
+                throw new Error(`assertElement shrank failed (axis=${axis}, minDelta=${minD}px, dw=${dw.toFixed(2)}, dh=${dh.toFixed(2)}): ${ctxLine}`);
+              }
+              break;
+            }
+            case 'delta': {
+              const constraints = aeAction.delta ?? {};
+              const deltas: Record<string, number> = { x: dx, y: dy, width: dw, height: dh };
+              const re = /^\s*(==|!=|>=|<=|>|<)\s*(-?\d+(?:\.\d+)?)\s*$/;
+              for (const [field, expr] of Object.entries(constraints)) {
+                if (!(field in deltas)) {
+                  throw new Error(`assertElement delta: unknown field "${field}" (allowed: x, y, width, height).`);
+                }
+                const m = re.exec(expr);
+                if (!m) {
+                  throw new Error(`assertElement delta: constraint "${field}: ${expr}" is not a valid comparison (e.g. ">0", ">=4", "==0").`);
+                }
+                const [, op, numStr] = m;
+                const num = Number(numStr);
+                const actual = deltas[field];
+                const ok =
+                  op === '==' ? actual === num :
+                  op === '!=' ? actual !== num :
+                  op === '>' ? actual > num :
+                  op === '>=' ? actual >= num :
+                  op === '<' ? actual < num :
+                  /* <= */ actual <= num;
+                if (!ok) {
+                  throw new Error(`assertElement delta failed: ${field} delta=${actual.toFixed(2)} does not satisfy "${expr}". ${ctxLine}`);
+                }
+              }
+              break;
+            }
+            case 'looksLike':
+            case 'looksDifferent': {
+              if (!snapshot?.pixels) {
+                throw new Error(
+                  `assertElement ${aeAction.comparator}: snapshot "${aeAction.against}" was not captured with pixels: true. ` +
+                  `Set pixels: true on the matching measureElement step.`,
+                );
+              }
+              const currentPng = await locator.screenshot();
+              const { diffPngBuffers, PixelDiffSizeError } = await import('./pixelDiff.js');
+              let diff;
+              try {
+                diff = diffPngBuffers(currentPng, snapshot.pixels, {
+                  threshold: aeAction.diffThreshold ?? 0.1,
+                });
+              } catch (err) {
+                if (err instanceof PixelDiffSizeError) {
+                  if (aeAction.comparator === 'looksDifferent') {
+                    extras.logOutput = `assertElement looksDifferent: dimensions changed (${err.aWidth}x${err.aHeight} vs ${err.bWidth}x${err.bHeight}) — counted as different.`;
+                    break;
+                  }
+                  throw new Error(
+                    `assertElement looksLike failed: ${err.message}`,
+                  );
+                }
+                throw err;
+              }
+              const maxRatio = aeAction.maxDiffRatio ?? 0.01;
+              const looksSame = diff.ratio <= maxRatio;
+              if (aeAction.saveDiff) {
+                const diffPath = path.isAbsolute(aeAction.saveDiff)
+                  ? aeAction.saveDiff
+                  : path.resolve(testFilePath ? path.dirname(testFilePath) : process.cwd(), aeAction.saveDiff);
+                await fs.mkdir(path.dirname(diffPath), { recursive: true });
+                await fs.writeFile(diffPath, diff.diffPng);
+              }
+              if (aeAction.comparator === 'looksLike' && !looksSame) {
+                throw new Error(
+                  `assertElement looksLike failed: ${diff.diffPixels}/${diff.totalPixels} pixels differ ` +
+                  `(ratio ${(diff.ratio * 100).toFixed(2)}% > maxDiffRatio ${(maxRatio * 100).toFixed(2)}%). ` +
+                  `${ctxLine}${aeAction.saveDiff ? ` (diff written to ${aeAction.saveDiff})` : ''}`,
+                );
+              }
+              if (aeAction.comparator === 'looksDifferent' && looksSame) {
+                throw new Error(
+                  `assertElement looksDifferent failed: only ${diff.diffPixels}/${diff.totalPixels} pixels differ ` +
+                  `(ratio ${(diff.ratio * 100).toFixed(2)}% ≤ maxDiffRatio ${(maxRatio * 100).toFixed(2)}%). ` +
+                  `${ctxLine}`,
+                );
+              }
+              extras.logOutput = `assertElement ${aeAction.comparator}: ${diff.diffPixels}/${diff.totalPixels} pixels differ (ratio ${(diff.ratio * 100).toFixed(2)}%)`;
+              break;
+            }
+          }
+
+          if (aeAction.styles && aeAction.styles.length > 0) {
+            const problems: string[] = [];
+            for (const a of aeAction.styles) {
+              const actualValue = await locator.evaluate(
+                (el, p) => window.getComputedStyle(el).getPropertyValue(p),
+                a.property,
+              );
+              const ok = evaluateStyleAssertion(actualValue, a.op, a.value);
+              if (!ok) {
+                problems.push(`${a.property} ${a.op} "${a.value}" (actual: "${actualValue}")`);
+              }
+            }
+            if (problems.length > 0) {
+              throw new Error(`assertElement style assertions failed:\n  - ${problems.join('\n  - ')}`);
+            }
+          }
+
+          if (!extras.logOutput) {
+            extras.logOutput = `assertElement ${aeAction.comparator}: ${ctxLine}`;
+          }
+          // Snapshot styles round-trip: if `expected.styles` was given, verify them too.
+          if (aeAction.expected?.styles) {
+            const problems: string[] = [];
+            for (const [prop, exp] of Object.entries(aeAction.expected.styles)) {
+              const actualValue = await locator.evaluate(
+                (el, p) => window.getComputedStyle(el).getPropertyValue(p),
+                prop,
+              );
+              if (actualValue !== exp) {
+                problems.push(`${prop}: expected "${exp}", got "${actualValue}"`);
+              }
+            }
+            if (problems.length > 0) {
+              throw new Error(`assertElement expected.styles failed:\n  - ${problems.join('\n  - ')}`);
+            }
+          }
+          // Same for snapshot.styles when comparator is equals/withinTolerance and we're comparing
+          // against a snapshot: each captured style must still match.
+          if (
+            snapshot &&
+            (aeAction.comparator === 'equals' || aeAction.comparator === 'withinTolerance') &&
+            Object.keys(expectedStyles).length > 0
+          ) {
+            const problems: string[] = [];
+            for (const [prop, exp] of Object.entries(expectedStyles)) {
+              const actualValue = await locator.evaluate(
+                (el, p) => window.getComputedStyle(el).getPropertyValue(p),
+                prop,
+              );
+              if (actualValue !== exp) {
+                problems.push(`${prop}: snapshot "${exp}", current "${actualValue}"`);
+              }
+            }
+            if (problems.length > 0) {
+              throw new Error(`assertElement snapshot styles drift:\n  - ${problems.join('\n  - ')}`);
+            }
+          }
+          break;
+        }
         default:
           throw new Error(`Unsupported action type: ${(action as Action).type}`);
       }
@@ -1877,6 +2201,7 @@ export const runWebTest = async (
     }
 
     const sizeResults: StepResult[] = [];
+    const measurements = new Map<string, ElementMeasurement>();
 
     let _sizeTestFailed = false;
 
@@ -1936,6 +2261,7 @@ export const runWebTest = async (
             responseLog,
             stepStartTs,
             screenshotSizeSuffix: sizesToTest.length > 1 ? size : undefined,
+            measurements,
           });
 
           sizeResults.push({

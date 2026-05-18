@@ -80,6 +80,10 @@ function formatActionName(step: StepResult, index: number): string {
       return `step-${index + 1}: assert cookies`;
     case 'expectResponse':
       return `step-${index + 1}: expect response ${action.url}`;
+    case 'measureElement':
+      return `step-${index + 1}: measure ${action.name}`;
+    case 'assertElement':
+      return `step-${index + 1}: assert element ${action.comparator}`;
     default: {
       const _exhaustiveCheck: never = action;
       return `step-${index + 1}: unknown action`;

@@ -16,7 +16,7 @@ import { loadTestDefinition } from '../../core/loader';
 import { InbucketClient } from '../../integrations/email/inbucketClient';
 import type { Email } from '../../integrations/email/types';
 import { getBrowserLaunchOptions, parseViewportSize } from './browserOptions.js';
-import { executeActionWithRetry, resolveStorageStatePath } from './playwrightExecutor.js';
+import { executeActionWithRetry, resolveStorageStatePath, type ElementMeasurement } from './playwrightExecutor.js';
 import { ResponseLog } from './responseLog.js';
 import {
   createTestContext,
@@ -160,6 +160,9 @@ async function runTestInWorkflow(
   const responseLog = new ResponseLog();
   responseLog.attach(page);
 
+  // Per-test measurement slot map for measureElement/assertElement.
+  const measurements = new Map<string, ElementMeasurement>();
+
   try {
     for (const [index, action] of test.steps.entries()) {
       const stepStartTs = Date.now();
@@ -179,6 +182,7 @@ async function runTestInWorkflow(
           testFilePath,
           responseLog,
           stepStartTs,
+          measurements,
         });
         results.push({ action, status: 'passed', logOutput: actionExtras.logOutput });
       } catch (error) {

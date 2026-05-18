@@ -10,3 +10,4 @@ pnpm-debug.log*
 yarn-error.log*
 .claude
 .env
+tmp-agent-smoke/

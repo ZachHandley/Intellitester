@@ -518,6 +518,8 @@ async function handleInteractiveError(
 
 export interface ActionExtras {
   logOutput?: string;
+  /** Path to the screenshot file produced by `screenshot` or `evaluate` actions. */
+  screenshotPath?: string;
 }
 
 export interface ExecuteActionOptions {
@@ -538,6 +540,8 @@ export interface ExecuteActionOptions {
   responseLog?: ResponseLog;
   /** Timestamp of the start of this step (used as the default `since` for `expectResponse`). */
   stepStartTs?: number;
+  /** When testing multiple viewport sizes, this is appended to screenshot filenames (e.g. "xl"). Test-runner only. */
+  screenshotSizeSuffix?: string;
 }
 
 export async function executeActionWithRetry(
@@ -546,7 +550,7 @@ export async function executeActionWithRetry(
   index: number,
   options: ExecuteActionOptions,
 ): Promise<ActionExtras> {
-  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing, testFilePath, responseLog, stepStartTs } = options;
+  const { baseUrl, context, screenshotDir, debugMode, interactive, aiConfig, browserName, healing, testFilePath, responseLog, stepStartTs, screenshotSizeSuffix } = options;
   const extras: ActionExtras = {};
 
   const buildTrackPayload = (stepExtras?: Record<string, unknown>): IntegrationTrackedResource | null => {
@@ -836,10 +840,80 @@ export async function executeActionWithRetry(
           }
           await runScroll(page, action);
           break;
-        case 'screenshot':
-          throw new Error('Screenshot action should be handled separately');
-        case 'evaluate':
-          throw new Error('Evaluate action should be handled separately');
+        case 'screenshot': {
+          const ssAction = action as Extract<Action, { type: 'screenshot' }>;
+          const waitBefore = ssAction.waitBefore ?? 500;
+          if (waitBefore > 0) {
+            if (debugMode) {
+              console.log(`[DEBUG] Screenshot: waiting ${waitBefore}ms for visual stability`);
+            }
+            await page.waitForTimeout(waitBefore);
+          }
+          // Multi-viewport runs append a size suffix to the filename so the
+          // outputs from different sizes don't overwrite each other.
+          const screenshotName = screenshotSizeSuffix && ssAction.name
+            ? ssAction.name.replace(/\.png$/, `-${screenshotSizeSuffix}.png`)
+            : ssAction.name;
+          extras.screenshotPath = await runScreenshot(page, screenshotName, screenshotDir, index, browserName);
+          break;
+        }
+        case 'evaluate': {
+          const evalAction = action as Extract<Action, { type: 'evaluate' }>;
+          const waitBefore = evalAction.waitBefore ?? 500;
+          if (waitBefore > 0) {
+            if (debugMode) {
+              console.log(`[DEBUG] Evaluate: waiting ${waitBefore}ms for visual stability`);
+            }
+            await page.waitForTimeout(waitBefore);
+          }
+          // Wait for page to settle
+          const timing = getBrowserTimingConfig(browserName ?? 'chromium');
+          await waitForPageStable(page, timing.screenshotNetworkIdleTimeout);
+          // Take screenshot
+          await ensureScreenshotDir(screenshotDir);
+          const evalScreenshotPath = path.join(screenshotDir, `evaluate-step-${index + 1}.png`);
+          const screenshotBuffer = await page.screenshot({
+            path: evalScreenshotPath,
+            fullPage: evalAction.fullPage ?? true,
+          });
+          // Interpolate expected values
+          const expectedRaw = evalAction.expected;
+          const expectedArray = Array.isArray(expectedRaw)
+            ? expectedRaw.map((e) => interpolateVariables(e, context.variables))
+            : [interpolateVariables(expectedRaw, context.variables)];
+          // Run evaluation. For agent mode, pass the live Page so the agent's
+          // tools (scroll, query_dom, accessibility_snapshot, etc.) can interact
+          // with it, plus the workflow directory for resolving relative paths
+          // in `tools: ./my-tools.ts`.
+          const workflowDir = testFilePath ? path.dirname(testFilePath) : process.cwd();
+          const evalResult = await evaluate({
+            expected: expectedArray,
+            mode: evalAction.mode ?? 'auto',
+            regex: evalAction.regex ?? false,
+            prompt: evalAction.prompt,
+            confidence: evalAction.confidence ?? 60,
+            screenshotBuffer,
+            screenshotPath: evalScreenshotPath,
+            aiConfig,
+            page,
+            maxSteps: evalAction.maxSteps,
+            customToolsPath: evalAction.tools,
+            workflowDir,
+          });
+          if (debugMode) {
+            console.log(`[DEBUG] Evaluate result: ${evalResult.passed ? 'PASSED' : 'FAILED'} (${evalResult.mode})`);
+            console.log(`[DEBUG] Reason: ${evalResult.reason}`);
+            if (evalResult.ocrText) {
+              console.log(`[DEBUG] OCR text (first 200 chars): ${evalResult.ocrText.slice(0, 200)}`);
+            }
+          }
+          if (!evalResult.passed) {
+            throw new Error(`Evaluate failed (${evalResult.mode} mode): ${evalResult.reason}`);
+          }
+          extras.screenshotPath = evalScreenshotPath;
+          extras.logOutput = `Evaluate passed (${evalResult.mode}): ${evalResult.reason}`;
+          break;
+        }
         case 'setVar': {
           let value: string;
           if (action.value) {
@@ -1350,7 +1424,7 @@ export async function executeActionWithRetry(
           throw new Error(`Unsupported action type: ${(action as Action).type}`);
       }
 
-      const trackedPayload = buildTrackPayload();
+      const trackedPayload = buildTrackPayload(extras as Record<string, unknown>);
       if (trackedPayload) {
         await trackResource(trackedPayload);
       }
@@ -1803,28 +1877,6 @@ export const runWebTest = async (
     }
 
     const sizeResults: StepResult[] = [];
-    const buildTrackPayload = (
-      action: Action,
-      index: number,
-      stepExtras?: Record<string, unknown>
-    ): IntegrationTrackedResource | null => {
-      if (!('track' in action)) return null;
-      const rawTrack = (action as { track?: Record<string, unknown> }).track;
-      if (!rawTrack || typeof rawTrack !== 'object') return null;
-      const track = interpolateTrackMetadata(rawTrack, executionContext.variables) as Record<string, unknown>;
-      if (typeof track.type !== 'string' || typeof track.id !== 'string') return null;
-
-      const { includeStepContext, ...rest } = track;
-      const payload: IntegrationTrackedResource = {
-        type: track.type,
-        id: track.id,
-        ...rest,
-      };
-      if (includeStepContext) {
-        payload.step = { index, ...action, ...stepExtras };
-      }
-      return payload;
-    };
 
     let _sizeTestFailed = false;
 
@@ -1870,108 +1922,6 @@ export const runWebTest = async (
         }
 
         try {
-          // Handle screenshot separately since it has special return handling
-          if (action.type === 'screenshot') {
-            const ssAction = action as Extract<Action, { type: 'screenshot' }>;
-            const waitBefore = ssAction.waitBefore ?? 500;
-
-            if (waitBefore > 0) {
-              if (debugMode) {
-                console.log(`[DEBUG] Screenshot: waiting ${waitBefore}ms for visual stability`);
-              }
-              await page.waitForTimeout(waitBefore);
-            }
-
-            // Include viewport size in screenshot filename when testing multiple sizes
-            const screenshotName = sizesToTest.length > 1 && ssAction.name
-              ? ssAction.name.replace(/\.png$/, `-${size}.png`)
-              : ssAction.name;
-            const screenshotPath = await runScreenshot(page, screenshotName, screenshotDir, index, browserName);
-            sizeResults.push({ action, status: 'passed', screenshotPath });
-            safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-            const trackedPayload = buildTrackPayload(action, index, { screenshotPath });
-            if (trackedPayload) {
-              await trackResource(trackedPayload);
-            }
-            continue;
-          }
-
-          // Handle evaluate separately since it captures screenshots and returns special results
-          if (action.type === 'evaluate') {
-            const evalAction = action as Extract<Action, { type: 'evaluate' }>;
-            const waitBefore = evalAction.waitBefore ?? 500;
-
-            if (waitBefore > 0) {
-              if (debugMode) {
-                console.log(`[DEBUG] Evaluate: waiting ${waitBefore}ms for visual stability`);
-              }
-              await page.waitForTimeout(waitBefore);
-            }
-
-            // Wait for page to settle
-            const timing = getBrowserTimingConfig(browserName ?? 'chromium');
-            await waitForPageStable(page, timing.screenshotNetworkIdleTimeout);
-
-            // Take screenshot
-            await ensureScreenshotDir(screenshotDir);
-            const evalScreenshotPath = path.join(screenshotDir, `evaluate-step-${index + 1}.png`);
-            const screenshotBuffer = await page.screenshot({
-              path: evalScreenshotPath,
-              fullPage: evalAction.fullPage ?? true,
-            });
-
-            // Interpolate expected values
-            const expectedRaw = evalAction.expected;
-            const expectedArray = Array.isArray(expectedRaw)
-              ? expectedRaw.map(e => interpolateVariables(e, executionContext.variables))
-              : [interpolateVariables(expectedRaw, executionContext.variables)];
-
-            // Run evaluation. For agent mode, pass the live Page so the agent's
-            // tools (scroll, query_dom, accessibility_snapshot, etc.) can interact
-            // with it, plus the workflow directory for resolving relative paths
-            // in `tools: ./my-tools.ts`.
-            const workflowDir = options.testFilePath ? path.dirname(options.testFilePath) : process.cwd();
-            const evalResult = await evaluate({
-              expected: expectedArray,
-              mode: evalAction.mode ?? 'auto',
-              regex: evalAction.regex ?? false,
-              prompt: evalAction.prompt,
-              confidence: evalAction.confidence ?? 60,
-              screenshotBuffer,
-              screenshotPath: evalScreenshotPath,
-              aiConfig: options.aiConfig,
-              page,
-              maxSteps: evalAction.maxSteps,
-              customToolsPath: evalAction.tools,
-              workflowDir,
-            });
-
-            if (debugMode) {
-              console.log(`[DEBUG] Evaluate result: ${evalResult.passed ? 'PASSED' : 'FAILED'} (${evalResult.mode})`);
-              console.log(`[DEBUG] Reason: ${evalResult.reason}`);
-              if (evalResult.ocrText) {
-                console.log(`[DEBUG] OCR text (first 200 chars): ${evalResult.ocrText.slice(0, 200)}`);
-              }
-            }
-
-            if (!evalResult.passed) {
-              throw new Error(`Evaluate failed (${evalResult.mode} mode): ${evalResult.reason}`);
-            }
-
-            sizeResults.push({
-              action,
-              status: 'passed',
-              screenshotPath: evalScreenshotPath,
-              logOutput: `Evaluate passed (${evalResult.mode}): ${evalResult.reason}`,
-            });
-            safeCallback('onStepComplete', options.onStepComplete
-              ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
-              : undefined);
-            continue;
-          }
-
           const stepStartTs = lastStepEndTs;
           const actionExtras = await executeActionWithRetry(page, action, index, {
             baseUrl: options.baseUrl ?? test.config?.web?.baseUrl,
@@ -1985,9 +1935,15 @@ export const runWebTest = async (
             testFilePath: options.testFilePath,
             responseLog,
             stepStartTs,
+            screenshotSizeSuffix: sizesToTest.length > 1 ? size : undefined,
           });
 
-          sizeResults.push({ action, status: 'passed', logOutput: actionExtras.logOutput });
+          sizeResults.push({
+            action,
+            status: 'passed',
+            logOutput: actionExtras.logOutput,
+            ...(actionExtras.screenshotPath ? { screenshotPath: actionExtras.screenshotPath } : {}),
+          });
           safeCallback('onStepComplete', options.onStepComplete
             ? () => options.onStepComplete!(sizeResults[sizeResults.length - 1], index, test.steps.length)
             : undefined);

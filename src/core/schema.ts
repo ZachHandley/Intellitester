@@ -508,7 +508,7 @@ export const defaultModelForProvider = (provider: string): string => {
     case 'perplexity': return 'sonar';
     case 'xai': return 'grok-2-latest';
     case 'cohere': return 'command-r-plus';
-    case 'fal': return 'anthropic/claude-haiku-4.5';
+    case 'fal': return 'google/gemini-2.5-flash';
     case 'ollama': return 'llama3.2:3b';
     case 'lmStudio': return 'local-model';
     // azure, bedrock, openaiCompat require explicit model — no sensible default
@@ -518,7 +518,7 @@ export const defaultModelForProvider = (provider: string): string => {
 
 const aiConfigSchema = z.object({
   provider: z.enum(SUPPORTED_PROVIDERS).describe('AI provider to use for test generation'),
-  model: z.string().trim().optional().describe('Model name to use (defaults based on provider if omitted)'),
+  model: z.string().trim().optional().describe('Model name to use (defaults based on provider if omitted). fal.ai requires the exact model identifier (e.g. `anthropic/claude-sonnet-4.5`, not `anthropic/claude-sonnet-4`) — unknown names silently route through a fallback upstream and may fail on multimodal inputs.'),
   apiKey: z.string().trim().optional().describe('API key for the AI provider (supports ${ENV_VAR} syntax)'),
   baseUrl: optionalUrl.describe('Base URL for the AI API (required for Ollama, auto-set for groq/openrouter)'),
   temperature: z.number().min(0).max(2).default(0.2).describe('Temperature for AI generation (0 = deterministic, 2 = very creative)'),

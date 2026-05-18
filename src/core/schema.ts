@@ -285,8 +285,8 @@ const evaluateActionSchema = z.object({
     z.string(),
     z.array(z.string()),
   ]).describe('Text to find in screenshot (substring or regex)'),
-  mode: z.enum(['ocr', 'ai', 'auto']).optional()
-    .describe('ocr=OCR only, ai=LLM vision only, auto=OCR first then AI fallback (default: auto)'),
+  mode: z.enum(['ocr', 'ai', 'agent', 'auto']).optional()
+    .describe('ocr=OCR only, ai=one-shot LLM vision, agent=multi-turn LLM with page-inspection tools, auto=OCR first then AI fallback (default: auto)'),
   regex: z.boolean().optional()
     .describe('Treat expected as regex patterns (default: false)'),
   prompt: z.string().optional()
@@ -297,7 +297,11 @@ const evaluateActionSchema = z.object({
     .describe('Full page or viewport only (default: true)'),
   confidence: z.number().min(0).max(100).optional()
     .describe('Min OCR confidence threshold, below falls back to AI in auto mode (default: 60)'),
-}).describe('Evaluate page state via screenshot analysis (OCR and/or AI vision)');
+  maxSteps: z.number().int().min(1).max(20).optional()
+    .describe('Agent mode only: max tool-calling iterations before forcing a verdict (default: 6)'),
+  tools: z.string().optional()
+    .describe('Agent mode only: path (relative to the test YAML) to a TS/JS module exporting { tools, handler } to extend the agent toolset'),
+}).describe('Evaluate page state via screenshot analysis (OCR, one-shot AI vision, or multi-turn agent)');
 
 const saveStorageStateActionSchema = z.object({
   type: z.literal('saveStorageState'),

@@ -1,29 +1,41 @@
-import { ChatMessage, Workflow } from 'blazen';
-import type { Context, JsToolDef } from 'blazen';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+import { ChatMessage, Workflow, runAgent } from 'blazen';
+import type { Context, JsToolDef, LlmPayload, ToolOutput } from 'blazen';
+import type { Page } from 'playwright';
 import { createWorker, type Worker, type RecognizeResult } from 'tesseract.js';
 import { z } from 'zod';
 import type { AIConfig } from './types';
 import { buildModel, buildCompletionOptions } from './provider';
 
+export type EvaluateMode = 'ocr' | 'ai' | 'agent' | 'auto';
+
 export interface EvaluateResult {
   passed: boolean;
-  mode: 'ocr' | 'ai';
+  mode: 'ocr' | 'ai' | 'agent';
   reason: string;
   ocrText?: string;
   ocrConfidence?: number;
   aiReason?: string;
+  agentIterations?: number;
   screenshotPath: string;
 }
 
 export interface EvaluateOptions {
   expected: string | string[];
-  mode: 'ocr' | 'ai' | 'auto';
+  mode: EvaluateMode;
   regex: boolean;
   prompt?: string;
   confidence: number;
   screenshotBuffer: Buffer;
   screenshotPath: string;
   aiConfig?: AIConfig;
+  // Agent-mode only:
+  page?: Page;
+  maxSteps?: number;
+  customToolsPath?: string;
+  workflowDir?: string;
 }
 
 interface MatchResult {
@@ -89,17 +101,17 @@ const AIEvaluationResponseSchema = z.object({
 const SUBMIT_EVALUATION_TOOL: JsToolDef = {
   name: 'submit_evaluation',
   description:
-    'Submit the structured pass/fail evaluation of the screenshot. Always call this exactly once.',
+    'Submit the structured pass/fail evaluation of the page. Call this exactly once when you are confident in your verdict — it is terminal.',
   parameters: {
     type: 'object',
     properties: {
       passed: {
         type: 'boolean',
-        description: 'Whether the screenshot meets the expected criteria.',
+        description: 'Whether the page meets the expected criteria.',
       },
       reason: {
         type: 'string',
-        description: 'Concise explanation of the decision.',
+        description: 'Concise explanation of the decision, citing the evidence you observed.',
       },
     },
     required: ['passed', 'reason'],
@@ -154,8 +166,478 @@ Does the screenshot contain all of the expected content or meet the specified co
   return result.data as { passed: boolean; reason: string };
 }
 
+// ---------- Agent (multi-turn tool-using) evaluation ----------
+
+type AgentToolResult =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; base64: string; mediaType: string; note?: string };
+
+export interface AgentToolContext {
+  page: Page;
+}
+
+export interface CustomToolsModule {
+  tools: JsToolDef[];
+  handler: (
+    name: string,
+    args: unknown,
+    ctx: AgentToolContext,
+  ) => Promise<AgentToolResult> | AgentToolResult;
+}
+
+const TAKE_SCREENSHOT_TOOL: JsToolDef = {
+  name: 'take_screenshot',
+  description:
+    'Capture a fresh screenshot of the current page state. Use after scrolling, waiting, or any DOM change. Returns the image so you can visually inspect it.',
+  parameters: {
+    type: 'object',
+    properties: {
+      fullPage: {
+        type: 'boolean',
+        description: 'Capture full scrollable page (true) or just the current viewport (false). Default: false (viewport only — faster).',
+      },
+      selector: {
+        type: 'string',
+        description: 'Optional CSS selector. If provided, screenshots just that element.',
+      },
+    },
+  },
+};
+
+const SCROLL_TOOL: JsToolDef = {
+  name: 'scroll',
+  description:
+    'Scroll the page or a specific element. Use to bring off-screen content into the viewport before re-screenshotting.',
+  parameters: {
+    type: 'object',
+    properties: {
+      direction: {
+        type: 'string',
+        enum: ['up', 'down'],
+        description: 'Direction to scroll the page.',
+      },
+      pixels: {
+        type: 'number',
+        description: 'Pixels to scroll (default 800). Used with `direction`.',
+      },
+      toBottom: {
+        type: 'boolean',
+        description: 'Scroll all the way to the bottom of the page.',
+      },
+      toTop: {
+        type: 'boolean',
+        description: 'Scroll all the way to the top of the page.',
+      },
+      selector: {
+        type: 'string',
+        description: 'CSS selector. If provided, scrolls that element into view instead of moving the page.',
+      },
+    },
+  },
+};
+
+const WAIT_TOOL: JsToolDef = {
+  name: 'wait',
+  description:
+    'Pause briefly to let animations or lazy-loaded UI settle before re-checking. Capped at 3000ms.',
+  parameters: {
+    type: 'object',
+    properties: {
+      ms: {
+        type: 'number',
+        description: 'Milliseconds to wait (1-3000).',
+      },
+    },
+    required: ['ms'],
+  },
+};
+
+const QUERY_DOM_TOOL: JsToolDef = {
+  name: 'query_dom',
+  description:
+    'Look up an element by CSS selector and report whether it exists, is visible, its text content, and its attributes. Useful when pixels are ambiguous (e.g., for <video>, <canvas>, or off-screen content).',
+  parameters: {
+    type: 'object',
+    properties: {
+      selector: {
+        type: 'string',
+        description: 'CSS selector to query.',
+      },
+    },
+    required: ['selector'],
+  },
+};
+
+const ACCESSIBILITY_SNAPSHOT_TOOL: JsToolDef = {
+  name: 'accessibility_snapshot',
+  description:
+    'Get the ARIA snapshot (YAML accessibility tree) of the page or a sub-tree. The truth-source when pixels are ambiguous — lists roles, names, and structure as screen readers see them.',
+  parameters: {
+    type: 'object',
+    properties: {
+      selector: {
+        type: 'string',
+        description: 'Optional CSS selector to scope the snapshot to a sub-tree. Default: full body.',
+      },
+    },
+  },
+};
+
+const AGENT_BUILTIN_TOOLS: JsToolDef[] = [
+  TAKE_SCREENSHOT_TOOL,
+  SCROLL_TOOL,
+  WAIT_TOOL,
+  QUERY_DOM_TOOL,
+  ACCESSIBILITY_SNAPSHOT_TOOL,
+];
+
+const AGENT_BUILTIN_NAMES = new Set(AGENT_BUILTIN_TOOLS.map((t) => t.name));
+const RESERVED_TOOL_NAMES = new Set([...AGENT_BUILTIN_NAMES, 'submit_evaluation']);
+
+function truncate(s: string, limit: number): string {
+  return s.length <= limit ? s : `${s.slice(0, limit)}\n…[truncated ${s.length - limit} chars]`;
+}
+
+async function execTakeScreenshot(args: Record<string, unknown>, page: Page): Promise<AgentToolResult> {
+  const fullPage = args.fullPage === true;
+  const selector = typeof args.selector === 'string' ? args.selector : undefined;
+  let buf: Buffer;
+  if (selector) {
+    buf = await page.locator(selector).first().screenshot();
+  } else {
+    buf = await page.screenshot({ fullPage });
+  }
+  const url = page.url();
+  return {
+    kind: 'image',
+    base64: buf.toString('base64'),
+    mediaType: 'image/png',
+    note: `Screenshot captured (${selector ? `selector=${selector}` : fullPage ? 'fullPage' : 'viewport'}) at ${url}`,
+  };
+}
+
+async function execScroll(args: Record<string, unknown>, page: Page): Promise<AgentToolResult> {
+  const selector = typeof args.selector === 'string' ? args.selector : undefined;
+  const toBottom = args.toBottom === true;
+  const toTop = args.toTop === true;
+  const direction = args.direction === 'up' ? 'up' : args.direction === 'down' ? 'down' : null;
+  const pixels = typeof args.pixels === 'number' ? args.pixels : 800;
+
+  if (selector) {
+    await page.locator(selector).first().scrollIntoViewIfNeeded();
+    return { kind: 'text', text: `Scrolled "${selector}" into view.` };
+  }
+  if (toBottom) {
+    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+    return { kind: 'text', text: 'Scrolled to bottom of page.' };
+  }
+  if (toTop) {
+    await page.evaluate(() => window.scrollTo(0, 0));
+    return { kind: 'text', text: 'Scrolled to top of page.' };
+  }
+  const dy = direction === 'up' ? -pixels : pixels;
+  await page.evaluate((y) => window.scrollBy(0, y), dy);
+  const pos = await page.evaluate(() => ({ y: window.scrollY, max: document.documentElement.scrollHeight - window.innerHeight }));
+  return { kind: 'text', text: `Scrolled ${dy}px. Now at y=${Math.round(pos.y)} / ${Math.round(pos.max)} (max).` };
+}
+
+async function execWait(args: Record<string, unknown>, page: Page): Promise<AgentToolResult> {
+  const requested = typeof args.ms === 'number' && args.ms > 0 ? args.ms : 500;
+  const ms = Math.min(Math.floor(requested), 3000);
+  await page.waitForTimeout(ms);
+  return { kind: 'text', text: `Waited ${ms}ms${requested !== ms ? ` (capped from requested ${requested}ms)` : ''}.` };
+}
+
+async function execQueryDom(args: Record<string, unknown>, page: Page): Promise<AgentToolResult> {
+  const selector = typeof args.selector === 'string' ? args.selector : '';
+  if (!selector) return { kind: 'text', text: 'query_dom error: selector is required.' };
+  try {
+    const locator = page.locator(selector);
+    const count = await locator.count();
+    if (count === 0) {
+      return { kind: 'text', text: `query_dom: no elements match "${selector}".` };
+    }
+    const first = locator.first();
+    const visible = await first.isVisible().catch(() => false);
+    const text = await first.innerText({ timeout: 1000 }).catch(() => '');
+    const attributes = await first
+      .evaluate((el) => {
+        const out: Record<string, string> = {};
+        const target = el as Element;
+        for (const name of target.getAttributeNames()) {
+          out[name] = target.getAttribute(name) ?? '';
+        }
+        return out;
+      })
+      .catch(() => ({}));
+    const payload = {
+      selector,
+      count,
+      visible,
+      text: truncate(text, 2000),
+      attributes,
+    };
+    return { kind: 'text', text: JSON.stringify(payload, null, 2) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { kind: 'text', text: `query_dom error: ${msg}` };
+  }
+}
+
+async function execAccessibilitySnapshot(args: Record<string, unknown>, page: Page): Promise<AgentToolResult> {
+  const selector = typeof args.selector === 'string' && args.selector.trim() ? args.selector : 'body';
+  try {
+    const locator = page.locator(selector).first();
+    const count = await locator.count();
+    if (count === 0) {
+      return { kind: 'text', text: `accessibility_snapshot: selector "${selector}" did not match any element.` };
+    }
+    const snap = await locator.ariaSnapshot({ timeout: 5000 });
+    return { kind: 'text', text: truncate(snap, 8000) };
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return { kind: 'text', text: `accessibility_snapshot error: ${msg}` };
+  }
+}
+
+async function dispatchBuiltinTool(
+  name: string,
+  args: Record<string, unknown>,
+  page: Page,
+): Promise<AgentToolResult> {
+  switch (name) {
+    case 'take_screenshot':
+      return execTakeScreenshot(args, page);
+    case 'scroll':
+      return execScroll(args, page);
+    case 'wait':
+      return execWait(args, page);
+    case 'query_dom':
+      return execQueryDom(args, page);
+    case 'accessibility_snapshot':
+      return execAccessibilitySnapshot(args, page);
+    default:
+      throw new Error(`Unknown built-in tool: ${name}`);
+  }
+}
+
+async function loadCustomTools(
+  toolsPath: string,
+  workflowDir: string,
+): Promise<CustomToolsModule> {
+  const resolved = path.isAbsolute(toolsPath) ? toolsPath : path.resolve(workflowDir, toolsPath);
+  const href = pathToFileURL(resolved).href;
+  const mod: unknown = await import(href);
+  const candidate =
+    (mod && typeof mod === 'object' && 'default' in mod
+      ? (mod as { default: unknown }).default
+      : mod) ?? mod;
+  if (
+    !candidate ||
+    typeof candidate !== 'object' ||
+    !Array.isArray((candidate as CustomToolsModule).tools) ||
+    typeof (candidate as CustomToolsModule).handler !== 'function'
+  ) {
+    throw new Error(
+      `Custom tools module at ${resolved} must export { tools: JsToolDef[], handler: (name, args, ctx) => AgentToolResult }`,
+    );
+  }
+  const out = candidate as CustomToolsModule;
+  for (const tool of out.tools) {
+    if (!tool.name || typeof tool.name !== 'string') {
+      throw new Error(`Custom tools module at ${resolved}: every tool must have a string \`name\`.`);
+    }
+    if (RESERVED_TOOL_NAMES.has(tool.name)) {
+      throw new Error(
+        `Custom tools module at ${resolved}: tool name "${tool.name}" collides with a reserved built-in tool. Rename it.`,
+      );
+    }
+  }
+  return out;
+}
+
+function toolResultToLlmPayload(result: AgentToolResult): LlmPayload {
+  if (result.kind === 'text') {
+    return { kind: 'text', text: result.text };
+  }
+  const parts = [
+    ...(result.note ? [{ partType: 'text', text: result.note }] : []),
+    {
+      partType: 'image',
+      image: {
+        source: { sourceType: 'base64', data: result.base64 },
+        mediaType: result.mediaType,
+      },
+    },
+  ];
+  return { kind: 'parts', parts };
+}
+
+class SubmitEvaluationSignal extends Error {
+  constructor(public passed: boolean, public reason: string) {
+    super('SubmitEvaluationSignal');
+    this.name = 'SubmitEvaluationSignal';
+  }
+}
+
+async function runAgentEvaluation(
+  initialScreenshot: Buffer,
+  expectedArray: string[],
+  customPrompt: string | undefined,
+  aiConfig: AIConfig,
+  page: Page,
+  opts: { maxSteps: number; customToolsPath?: string; workflowDir: string },
+): Promise<{ passed: boolean; reason: string; iterations: number }> {
+  const model = buildModel(aiConfig);
+  const completionOptions = buildCompletionOptions(aiConfig);
+
+  let customTools: JsToolDef[] = [];
+  let customHandler: CustomToolsModule['handler'] | undefined;
+  if (opts.customToolsPath) {
+    const mod = await loadCustomTools(opts.customToolsPath, opts.workflowDir);
+    customTools = mod.tools;
+    customHandler = mod.handler;
+  }
+
+  const allTools: JsToolDef[] = [
+    ...AGENT_BUILTIN_TOOLS,
+    ...customTools,
+    SUBMIT_EVALUATION_TOOL,
+  ];
+
+  const systemPrompt = `You are auditing a web page to decide whether the user's expected condition holds.
+
+You have tools to investigate before deciding:
+  - take_screenshot: re-capture the page (use after scrolling/waiting)
+  - scroll: bring off-screen content into the viewport
+  - wait: let animations or lazy-loaded UI settle (max 3000ms)
+  - query_dom: read text/visibility/attributes for a CSS selector
+  - accessibility_snapshot: read the accessibility tree — the truth source when pixels are ambiguous (e.g., <video>, <canvas>, dynamic UIs)
+  - submit_evaluation: terminal — call exactly once with { passed, reason } when confident
+
+The initial screenshot of the page is already attached. If you cannot find the expected content immediately, scroll, wait, or query the DOM before concluding it is missing. Be efficient — investigate, then call submit_evaluation.`;
+
+  const defaultUserPrompt = `Expected content or conditions:
+${expectedArray.map((exp) => `- ${exp}`).join('\n')}
+
+Investigate the page using the available tools. When confident, call submit_evaluation with your verdict.`;
+
+  const userPromptText = customPrompt || defaultUserPrompt;
+  const imageBase64 = initialScreenshot.toString('base64');
+
+  const messages = [
+    ChatMessage.system(systemPrompt),
+    ChatMessage.userImageBase64(userPromptText, imageBase64, 'image/png'),
+  ];
+
+  let submission: { passed: boolean; reason: string } | undefined;
+
+  const toolHandler = async (name: string, rawArgs: unknown): Promise<ToolOutput> => {
+    const args = (rawArgs && typeof rawArgs === 'object' ? rawArgs : {}) as Record<string, unknown>;
+
+    if (name === 'submit_evaluation') {
+      const parsed = AIEvaluationResponseSchema.parse(args);
+      submission = parsed;
+      throw new SubmitEvaluationSignal(parsed.passed, parsed.reason);
+    }
+
+    let result: AgentToolResult;
+    if (AGENT_BUILTIN_NAMES.has(name)) {
+      result = await dispatchBuiltinTool(name, args, page);
+    } else if (customHandler) {
+      result = await customHandler(name, args, { page });
+    } else {
+      result = { kind: 'text', text: `Unknown tool: ${name}` };
+    }
+
+    return {
+      data: result.kind === 'image'
+        ? { ok: true, note: result.note ?? 'image returned to model' }
+        : { ok: true, text: result.text },
+      llmOverride: toolResultToLlmPayload(result),
+    };
+  };
+
+  let iterations = 0;
+  try {
+    const agentResult = await runAgent(model, messages, allTools, toolHandler, {
+      maxIterations: opts.maxSteps,
+      temperature: completionOptions.temperature ?? undefined,
+      maxTokens: completionOptions.maxTokens ?? undefined,
+      noFinishTool: true,
+    });
+    iterations = agentResult.iterations;
+  } catch (e) {
+    if (!(e instanceof SubmitEvaluationSignal)) {
+      throw e;
+    }
+    // submit_evaluation called; submission populated via closure.
+  }
+
+  if (!submission) {
+    throw new Error(
+      `Agent exhausted ${opts.maxSteps} iterations without calling submit_evaluation.`,
+    );
+  }
+
+  return {
+    passed: submission.passed,
+    reason: submission.reason,
+    iterations: iterations || opts.maxSteps,
+  };
+}
+
 export async function evaluate(options: EvaluateOptions): Promise<EvaluateResult> {
   const expectedArray = Array.isArray(options.expected) ? options.expected : [options.expected];
+
+  if (options.mode === 'agent') {
+    if (!options.aiConfig) {
+      return {
+        passed: false,
+        mode: 'agent',
+        reason: 'Agent evaluation requested but no AI configuration provided',
+        screenshotPath: options.screenshotPath,
+      };
+    }
+    if (!options.page) {
+      return {
+        passed: false,
+        mode: 'agent',
+        reason: 'Agent evaluation requires a live Page (internal wiring error)',
+        screenshotPath: options.screenshotPath,
+      };
+    }
+    try {
+      const agentResult = await runAgentEvaluation(
+        options.screenshotBuffer,
+        expectedArray,
+        options.prompt,
+        options.aiConfig,
+        options.page,
+        {
+          maxSteps: options.maxSteps ?? 6,
+          customToolsPath: options.customToolsPath,
+          workflowDir: options.workflowDir ?? process.cwd(),
+        },
+      );
+      return {
+        passed: agentResult.passed,
+        mode: 'agent',
+        reason: agentResult.reason,
+        aiReason: agentResult.reason,
+        agentIterations: agentResult.iterations,
+        screenshotPath: options.screenshotPath,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return {
+        passed: false,
+        mode: 'agent',
+        reason: `Agent evaluation failed: ${msg}`,
+        screenshotPath: options.screenshotPath,
+      };
+    }
+  }
 
   let ocrFailReason: string | undefined;
 

@@ -1928,7 +1928,11 @@ export const runWebTest = async (
               ? expectedRaw.map(e => interpolateVariables(e, executionContext.variables))
               : [interpolateVariables(expectedRaw, executionContext.variables)];
 
-            // Run evaluation
+            // Run evaluation. For agent mode, pass the live Page so the agent's
+            // tools (scroll, query_dom, accessibility_snapshot, etc.) can interact
+            // with it, plus the workflow directory for resolving relative paths
+            // in `tools: ./my-tools.ts`.
+            const workflowDir = options.testFilePath ? path.dirname(options.testFilePath) : process.cwd();
             const evalResult = await evaluate({
               expected: expectedArray,
               mode: evalAction.mode ?? 'auto',
@@ -1938,6 +1942,10 @@ export const runWebTest = async (
               screenshotBuffer,
               screenshotPath: evalScreenshotPath,
               aiConfig: options.aiConfig,
+              page,
+              maxSteps: evalAction.maxSteps,
+              customToolsPath: evalAction.tools,
+              workflowDir,
             });
 
             if (debugMode) {
